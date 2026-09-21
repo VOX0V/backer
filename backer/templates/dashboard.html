@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Backer{% endblock %}
+{% block content %}
+
+{% if any_running %}
+<meta http-equiv="refresh" content="5">
+{% endif %}
+
+<div class="dash-header">
+    <h1>Tâches de sauvegarde</h1>
+    <div class="grand-total">Total conservé : <strong>{{ grand_total|filesizeformat }}</strong></div>
+</div>
+
+{% if last_failed_login %}
+<div class="flash flash-error security-note">
+    <span>
+        Dernière connexion échouée : « {{ last_failed_login.username_attempted }} » depuis {{ last_failed_login.ip_address }}
+        le {{ last_failed_login.timestamp.strftime('%Y-%m-%d %H:%M') }}
+    </span>
+    <form method="POST" action="{{ url_for('main.security_alert_dismiss') }}" class="dismiss-form">
+        <input type="hidden" name="login_id" value="{{ last_failed_login.id }}">
+        <button type="submit">Effacer</button>
+    </form>
+</div>
+{% endif %}
+
+<p class="muted">
+    Les tâches sont définies dans le <code>.env</code> (nom / source / destination).
+    La planification (cron) et la rétention se modifient ci-dessous et sont conservées même après un redémarrage.
+</p>
+
+<div class="table-wrapper">
+<table class="job-table">
+    <thead>
+        <tr>
+            <th>Nom</th>
+            <th>État</th>
+            <th>Source</th>
+            <th>Destination</th>
+            <th>Cron</th>
+            <th>Conserver</th>
+            <th>Dernière exécution</th>
+            <th>Archives</th>
+            <th>Total</th>
+            <th>Estimé</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in jobs_view %}
+        <tr>
+            <td>{{ item.job.name }}</td>
+            <td>
+                {% if item.source_connected %}
+                    <span class="state-text state-ok">Connecté</span>
+                {% else %}
+                    <span class="state-text state-error">Déconnecté</span>
+                {% endif %}
+            </td>
+            <td class="path-cell">{{ item.job.source_path }}</td>
+            <td class="path-cell">{{ item.job.dest_path }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('main.job_schedule', job_id=item.job.id) }}" class="inline-form">
+                    <input type="text" name="cron_expression" value="{{ item.job.cron_expression }}"
+                           placeholder="ex: 0 3 * * *  ou  manual" size="14">
+                    <button type="submit">OK</button>
+                </form>
+                <div class="muted small">{{ item.cron_readable }}</div>
+            </td>
+            <td>
+                <form method="POST" action="{{ url_for('main.job_retention', job_id=item.job.id) }}" class="inline-form">
+                    <input type="number" name="retention_count" min="1"
+                           value="{{ item.job.retention_count if item.job.retention_count else '' }}"
+                           placeholder="illimité" size="4">
+                    <button type="submit">OK</button>
+                </form>
+            </td>
+            <td>
+                {% if item.last_run %}
+                    <span class="badge badge-{{ item.last_run.status }}">{{ item.last_run.status }}</span>
+                    {{ item.last_run.started_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% if item.last_run.size_bytes %}
+                        <div class="muted small">{{ item.last_run.size_bytes|filesizeformat }}</div>
+                    {% endif %}
+                    {% if item.last_run.status == "failed" %}
+                        <div class="muted small">{{ item.last_run.message }}</div>
+                    {% elif item.last_run.log_name %}
+                        <div class="muted small">
+                            <a href="{{ url_for('main.job_log_view', job_id=item.job.id, log_name=item.last_run.log_name) }}">{{ item.last_run.log_name }}</a>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <span class="muted">jamais</span>
+                {% endif %}
+            </td>
+            <td>{{ item.archive_count }}</td>
+            <td>{{ item.total_size|filesizeformat }}</td>
+            <td>
+                {% if item.estimated_total is not none %}
+                    {{ item.estimated_total|filesizeformat }}
+                {% else %}
+                    <span class="muted">—</span>
+                {% endif %}
+            </td>
+            <td class="actions-cell">
+                <form method="POST" action="{{ url_for('main.job_run', job_id=item.job.id) }}">
+                    <button type="submit">Lancer</button>
+                </form>
+                <form method="POST" action="{{ url_for('main.job_toggle', job_id=item.job.id) }}">
+                    <button type="submit">{{ "Désactiver" if item.job.enabled else "Activer" }}</button>
+                </form>
+                <a href="{{ url_for('main.job_archives', job_id=item.job.id) }}"><button type="button">Historique</button></a>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11" class="muted">Aucune tâche trouvée dans le .env (BACK1_NAME, BACK1_SOURCE, BACK1_DEST, ...).</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<p class="muted small">
+    Cron : format standard à 5 champs (minute heure jour mois jour_semaine), ex. <code>0 3 * * *</code> = tous les jours à 3h.
+    Utilise <code>manual</code> pour désactiver la planification automatique (bouton « Lancer » seulement).
+    Rétention : nombre d'archives à garder par tâche, vide = illimité.
+    Estimé : taille totale projetée une fois la rétention atteinte (basée sur la taille moyenne actuelle).
+</p>
+
+{% endblock %}

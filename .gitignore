@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Données runtime -- ne vivent jamais dans le repo, uniquement dans le
+# volume externe monté par docker-compose.yml (voir /home/srv/sys/backer/data)
+backer/data/
+*.db
+*.sqlite
+*.sqlite3
+secret_key
+
+.DS_Store
