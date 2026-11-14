@@ -1,50 +1,36 @@
-name: System
 services:
-## IP ADDRESS : 192.168.0.201
-## AUTOHEAL ##
-  autoheal:
-    image: willfarrell/autoheal:latest
-    container_name: Autoheal
-    restart: unless-stopped
-    environment:
-      - AUTOHEAL_CONTAINER_LABEL=all
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-## TUNNEL ##
-  tunnel:
-    image: cloudflare/cloudflared
-    container_name: Cloudflared
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${CFTOK}
-      - TUNNEL_METRICS=0.0.0.0:20241
-    healthcheck:
-      test: ["CMD", "cloudflared", "tunnel", "ready"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: always
-## BACKER ##
   backer:
-    build: ./backer
-    container_name: backer_app
+    # En production, remplace "build" par l'image publiée sur GHCR une fois
+    # le workflow CI passé, ex: image: ghcr.io/<pseudo>/backer:latest
+    build:
+      context: ./backer
+    container_name: backer
     restart: unless-stopped
-    environment:
-      - TZ=America/Toronto
-    labels:
-      - "autoheal=true"
-    ports:
-      - "5000:5000"
     env_file:
       - .env
+    ports:
+      - "5000:5000"
     volumes:
-      # Sources en lecture seule -- Backer ne peut jamais modifier/effacer
-      # quoi que ce soit dans ces dossiers, même en cas de bug ou de compromission.
+      # Données persistantes (base SQLite + clé de session) -- HORS du repo,
+      # jamais copiées dans l'image (voir backer/.dockerignore).
+      - ./data:/app/data
+
+      # Sources à sauvegarder, montées en LECTURE SEULE : adapte les chemins
+      # hôtes à ta machine. Doivent correspondre aux BACKN_SOURCE du .env.
       - /home/srv:/mnt/sources/srv:ro
       - /mnt/netsec:/mnt/sources/netsec:ro
       - /mnt/piserv:/mnt/sources/piserv:ro
-      # Seule racine en écriture -- c'est là que les archives .zip sont écrites.
-      - /mnt/ssd:/mnt/sources/ssd:rw
-      # Config + base de données, persistées hors du conteneur.
-      - ./backer/data:/app/data
+
+      # Destination des archives, seule racine montée en écriture. Doit
+      # correspondre aux BACKN_DEST du .env.
+      - /mnt/hdd:/mnt/sources/hdd
+
+    mem_limit: 512m
+    cpus: 1.0
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

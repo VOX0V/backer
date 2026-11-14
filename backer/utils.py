@@ -12,7 +12,7 @@ MOUNT_ROOTS = {
     "srv":     {"host_path": "/home/srv",   "container_path": "/mnt/sources/srv",     "writable": False},
     "netsec":  {"host_path": "/mnt/netsec", "container_path": "/mnt/sources/netsec",  "writable": False},
     "piserv":  {"host_path": "/mnt/piserv", "container_path": "/mnt/sources/piserv",  "writable": False},
-    "ssd":     {"host_path": "/mnt/ssd",    "container_path": "/mnt/sources/ssd",     "writable": True},
+    "hdd":     {"host_path": "/mnt/hdd",    "container_path": "/mnt/sources/hdd",     "writable": True},
 }
 
 

@@ -15,12 +15,23 @@ from utils import (
 )
 from scheduler_jobs import (
     register_job, unregister_job, load_all_jobs_on_startup,
-    run_job_async, parse_cron_or_none, _apscheduler_job_id,
+    run_job_async, parse_cron_or_none,
 )
-from onedrive_monitor import scan_log, scan_log_job, upload_info, monitor_state
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "secret_key")
+DB_FILE = os.path.join(DATA_DIR, "backer.db")
+
+# Aucune route de Backer n'a besoin d'un corps de requête volumineux (le
+# plus gros formulaire est la création d'un compte admin) -- une limite
+# basse évite qu'un Content-Length annoncé énorme épuise la mémoire du
+# conteneur avant même d'avoir authentifié qui que ce soit.
+MAX_CONTENT_LENGTH = 64 * 1024  # 64 Ko
+
+# Routes sensibles sur lesquelles on ajoute des headers défensifs
+# (anti-clickjacking + anti-cache) sans les imposer globalement, pour ne
+# jamais gêner un usage légitime ailleurs dans l'app.
+_PROTECTED_ENDPOINT_PREFIXES = ("auth.login", "main.admin_")
 
 main_bp = Blueprint("main", __name__)
 
@@ -32,46 +43,6 @@ main_bp = Blueprint("main", __name__)
 @main_bp.route("/health")
 def health():
     return jsonify({"status": "ok"})
-
-
-def _iso_local(dt):
-    """Date ISO avec fuseau (les dates en DB sont naïves, heure locale du conteneur)."""
-    return dt.astimezone().isoformat() if dt else None
-
-
-@main_bp.route("/api/homepage")
-def api_homepage():
-    """Statut pour le widget Homepage (customapi). Sans login -- réseau local seulement.
-    Une clé par tâche (nom de la tâche) + une clé « onedrive_client »."""
-    scan_log()
-
-    data = {}
-    for job in BackupJob.query.order_by(BackupJob.name.asc()).all():
-        last_ok = (
-            BackupHistory.query.filter_by(job_id=job.id, status="success")
-            .order_by(BackupHistory.finished_at.desc()).first()
-        )
-        ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
-
-        if last_ok is None:
-            onedrive_status, uploaded_at = "aucune sauvegarde", None
-        else:
-            uploaded_at = upload_info(last_ok.archive_name)
-            onedrive_status = "envoyée" if uploaded_at else "en attente"
-
-        data[job.name] = {
-            "last_success": _iso_local(last_ok.finished_at) if last_ok else None,
-            "next_run": _iso_local(ap_job.next_run_time) if ap_job else None,
-            "onedrive": onedrive_status,
-            "onedrive_uploaded_at": _iso_local(uploaded_at),
-        }
-
-    state = monitor_state()
-    data["onedrive_client"] = {
-        "log": "ok" if state["readable"] else "illisible",
-        "last_sync": _iso_local(state["last_sync"]),
-    }
-    return jsonify(data)
 
 
 @main_bp.route("/")
@@ -409,8 +380,9 @@ def create_app():
     app = Flask(__name__)
 
     app.config["SECRET_KEY"] = _load_or_create_secret_key()
-    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(DATA_DIR, 'backer.db')}"
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_FILE}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
     is_https = os.environ.get("CONNECTION_TYPE", "https").lower() == "https"
     app.config.update(
@@ -430,7 +402,7 @@ def create_app():
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": "v4.1"}
+        return {"app_version": "v4"}
 
     @app.before_request
     def block_banned_ips():
@@ -440,10 +412,27 @@ def create_app():
         if ban:
             return "Accès temporairement bloqué (trop de tentatives échouées).", 403
 
+    @app.after_request
+    def add_defensive_headers(response):
+        # Anti-clickjacking + anti-cache, uniquement sur /login et les
+        # routes /admin/* -- pas globalement, pour ne jamais gêner un
+        # usage légitime du dashboard ailleurs (ex: iframe personnelle).
+        endpoint = request.endpoint or ""
+        if endpoint.startswith(_PROTECTED_ENDPOINT_PREFIXES):
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     with app.app_context():
         db.create_all()
         _bootstrap_admin_if_needed()
         _sync_jobs_from_env()
+        # Le fichier SQLite contient des hachages de mots de passe -- mêmes
+        # permissions restrictives que secret_key, pas seulement l'umask
+        # par défaut.
+        if os.path.exists(DB_FILE):
+            os.chmod(DB_FILE, 0o600)
 
     _app_singleton = app
 
@@ -451,12 +440,6 @@ def create_app():
         scheduler.init_app(app)
         scheduler.start()
     load_all_jobs_on_startup(app)
-
-    # Lecture périodique du log OneDrive (confirmation des uploads).
-    scheduler.add_job(
-        id="onedrive_log_scan", func=scan_log_job, args=[app],
-        trigger="interval", seconds=60, replace_existing=True,
-    )
 
     return app
 
