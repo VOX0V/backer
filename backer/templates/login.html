@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Connexion — Backer{% endblock %}
+{% block title %}Sign in — Backer{% endblock %}
 {% block content %}
 <div class="login-wrap">
     <form method="POST" class="login-card">
         <h1>Backer</h1>
         <label>
-            Nom d'utilisateur
+            Username
             <input type="text" name="username" autocomplete="username" required autofocus>
         </label>
         <label>
-            Mot de passe
+            Password
             <input type="password" name="password" autocomplete="current-password" required>
         </label>
-        <button type="submit">Connexion</button>
+        <button type="submit">Sign in</button>
     </form>
 </div>
 {% endblock %}

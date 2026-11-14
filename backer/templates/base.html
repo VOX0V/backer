@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,7 +16,7 @@
             {% if current_user.is_admin %}
                 <a href="{{ url_for('main.admin_home') }}">Admin</a>
             {% endif %}
-            <a href="{{ url_for('auth.logout') }}">Déconnexion ({{ current_user.username }})</a>
+            <a href="{{ url_for('auth.logout') }}">Log out ({{ current_user.username }})</a>
         </div>
     </nav>
     {% endif %}

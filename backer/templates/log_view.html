@@ -2,7 +2,7 @@
 {% block title %}Log — {{ log_name }}{% endblock %}
 {% block content %}
 
-<p><a href="{{ url_for('main.job_archives', job_id=job.id) }}">&larr; Retour à l'historique de {{ job.name }}</a></p>
+<p><a href="{{ url_for('main.job_archives', job_id=job.id) }}">&larr; Back to {{ job.name }} history</a></p>
 
 <h1>{{ log_name }}</h1>
 <pre class="log-view">{{ content }}</pre>

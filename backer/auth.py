@@ -100,7 +100,7 @@ def login():
 
     if request.method == "POST":
         if active_ban:
-            flash("Trop de tentatives échouées. Réessaie plus tard.", "error")
+            flash("Too many failed attempts. Try again later.", "error")
             return render_template("login.html"), 429
 
         username = request.form.get("username", "").strip()
@@ -132,7 +132,7 @@ def login():
             return redirect(url_for("main.dashboard"))
 
         _register_failed_attempt(ip_address)
-        flash("Identifiants invalides.", "error")
+        flash("Invalid credentials.", "error")
 
     return render_template("login.html")
 

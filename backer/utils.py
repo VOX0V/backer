@@ -22,18 +22,18 @@ def format_size(num_bytes):
     if num_bytes is None:
         return "n/a"
     size = float(num_bytes)
-    for unit in ("o", "Ko", "Mo", "Go", "To"):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024.0:
-            return f"{int(size)} {unit}" if unit == "o" else f"{size:.1f} {unit}"
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024.0
-    return f"{size:.1f} Po"
+    return f"{size:.1f} PB"
 
 
 _JOURS_CRON = {
-    "0": "dimanche", "1": "lundi", "2": "mardi", "3": "mercredi",
-    "4": "jeudi", "5": "vendredi", "6": "samedi", "7": "dimanche",
-    "sun": "dimanche", "mon": "lundi", "tue": "mardi", "wed": "mercredi",
-    "thu": "jeudi", "fri": "vendredi", "sat": "samedi",
+    "0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday",
+    "4": "Thursday", "5": "Friday", "6": "Saturday", "7": "Sunday",
+    "sun": "Sunday", "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+    "thu": "Thursday", "fri": "Friday", "sat": "Saturday",
 }
 
 
@@ -45,7 +45,7 @@ def translate_cron(cron_expression):
     plutôt que d'afficher une traduction incorrecte.
     """
     if not cron_expression or cron_expression.strip().lower() == "manual":
-        return "Manuel (pas de planification automatique)"
+        return "Manual (no automatic schedule)"
 
     parts = cron_expression.strip().split()
     if len(parts) != 5:
@@ -55,20 +55,20 @@ def translate_cron(cron_expression):
 
     try:
         if minute.isdigit() and hour.isdigit() and day == "*" and month == "*" and dow == "*":
-            return f"Tous les jours à {int(hour):02d}h{int(minute):02d}"
+            return f"Every day at {int(hour):02d}:{int(minute):02d}"
 
         if minute.isdigit() and hour.isdigit() and day == "*" and month == "*" and dow != "*":
             jour = _JOURS_CRON.get(dow.lower(), dow)
-            return f"Chaque {jour} à {int(hour):02d}h{int(minute):02d}"
+            return f"Every {jour} at {int(hour):02d}:{int(minute):02d}"
 
         if minute.startswith("*/") and hour == "*" and day == "*" and month == "*" and dow == "*":
-            return f"Toutes les {int(minute[2:])} minutes"
+            return f"Every {int(minute[2:])} minutes"
 
         if minute.isdigit() and hour.startswith("*/") and day == "*" and month == "*" and dow == "*":
-            return f"Toutes les {int(hour[2:])} heures (à la minute {int(minute):02d})"
+            return f"Every {int(hour[2:])} hours (at minute {int(minute):02d})"
 
         if minute.isdigit() and hour.isdigit() and day.isdigit() and month == "*" and dow == "*":
-            return f"Le {int(day)} de chaque mois à {int(hour):02d}h{int(minute):02d}"
+            return f"On day {int(day)} of every month at {int(hour):02d}:{int(minute):02d}"
     except ValueError:
         pass
 
@@ -112,7 +112,7 @@ def host_to_container_path(host_path, require_writable=False):
             container_path = os.path.normpath(os.path.join(cfg["container_path"], remainder))
             return container_path
 
-    raise PathError(f"'{host_path}' n'est couvert par aucun volume monté (voir docker-compose.yml)")
+    raise PathError(f"'{host_path}' is not covered by any mounted volume (see docker-compose.yml)")
 
 
 def run_backup(source_container_path, dest_container_dir, job_name):
@@ -131,7 +131,7 @@ def run_backup(source_container_path, dest_container_dir, job_name):
     if not os.path.isdir(source_container_path):
         return {
             "status": "failed",
-            "message": f"Dossier source introuvable : {source_container_path}",
+            "message": f"Source folder not found: {source_container_path}",
             "archive_name": None, "log_name": None, "size_bytes": None,
         }
 
@@ -165,12 +165,12 @@ def run_backup(source_container_path, dest_container_dir, job_name):
         )
     except subprocess.TimeoutExpired:
         return {
-            "status": "failed", "message": "Délai dépassé lors de la création de l'archive",
+            "status": "failed", "message": "Timed out while creating the archive",
             "archive_name": None, "log_name": None, "size_bytes": None,
         }
     except FileNotFoundError:
         return {
-            "status": "failed", "message": "Binaire 'zip' introuvable dans le conteneur",
+            "status": "failed", "message": "'zip' binary not found in the container",
             "archive_name": None, "log_name": None, "size_bytes": None,
         }
 
@@ -183,10 +183,10 @@ def run_backup(source_container_path, dest_container_dir, job_name):
         if result.returncode == 0:
             message = "OK"
         else:
-            message = f"OK avec avertissements (code zip {result.returncode}) -- voir le fichier log"
+            message = f"OK with warnings (zip exit code {result.returncode}) -- see the log file"
     else:
         status = "failed"
-        message = f"zip a échoué (code {result.returncode}) : {result.stderr[-500:]}"
+        message = f"zip failed (code {result.returncode}): {result.stderr[-500:]}"
         archive_name = None
 
     _write_log_file(
@@ -207,18 +207,18 @@ def _write_log_file(log_path, job_name, started_at, finished_at, status, size_by
                      source, zip_returncode, zip_stderr):
     duration = (finished_at - started_at).total_seconds()
     lines = [
-        f"Job : {job_name}",
-        f"Source : {source}",
-        f"Début : {started_at.isoformat(timespec='seconds')}",
-        f"Fin : {finished_at.isoformat(timespec='seconds')}",
-        f"Durée : {duration:.1f} s",
-        f"Statut : {status}",
-        f"Taille : {format_size(size_bytes)}" if size_bytes else "Taille : n/a",
-        f"Code retour zip : {zip_returncode}",
+        f"Job: {job_name}",
+        f"Source: {source}",
+        f"Start: {started_at.isoformat(timespec='seconds')}",
+        f"End: {finished_at.isoformat(timespec='seconds')}",
+        f"Duration: {duration:.1f} s",
+        f"Status: {status}",
+        f"Size: {format_size(size_bytes)}" if size_bytes else "Size: n/a",
+        f"zip exit code: {zip_returncode}",
     ]
     if zip_stderr and zip_stderr.strip():
         lines.append("")
-        lines.append("--- Avertissements / erreurs zip ---")
+        lines.append("--- zip warnings / errors ---")
         lines.append(zip_stderr.strip())
 
     try:
@@ -285,10 +285,10 @@ def enforce_retention(dest_container_dir, job_name, retention_count, log_lines=N
         try:
             os.remove(zip_path)
             if log_lines is not None:
-                log_lines.append(f"Rétention : archive supprimée ({archive['name']})")
+                log_lines.append(f"Retention: archive deleted ({archive['name']})")
         except OSError as exc:
             if log_lines is not None:
-                log_lines.append(f"Rétention : échec de suppression de {archive['name']} ({exc})")
+                log_lines.append(f"Retention: failed to delete {archive['name']} ({exc})")
             continue
         if archive["log_name"]:
             log_path = os.path.join(dest_container_dir, archive["log_name"])
@@ -303,11 +303,11 @@ def delete_archive(dest_container_dir, archive_name):
     Valide que archive_name est un nom de fichier simple (pas de chemin)."""
     safe_name = os.path.basename(archive_name)
     if safe_name != archive_name or not safe_name.endswith(".zip"):
-        raise PathError("Nom d'archive invalide")
+        raise PathError("Invalid archive name")
 
     zip_path = os.path.join(dest_container_dir, safe_name)
     if not os.path.isfile(zip_path):
-        raise PathError("Archive introuvable")
+        raise PathError("Archive not found")
     os.remove(zip_path)
 
     log_path = os.path.join(dest_container_dir, safe_name[:-4] + ".log")
@@ -319,10 +319,10 @@ def read_log_file(dest_container_dir, log_name):
     """Lit le contenu d'un fichier .log précis, avec validation du nom."""
     safe_name = os.path.basename(log_name)
     if safe_name != log_name or not safe_name.endswith(".log"):
-        raise PathError("Nom de log invalide")
+        raise PathError("Invalid log name")
 
     log_path = os.path.join(dest_container_dir, safe_name)
     if not os.path.isfile(log_path):
-        raise PathError("Log introuvable")
+        raise PathError("Log not found")
     with open(log_path, "r") as f:
         return f.read()

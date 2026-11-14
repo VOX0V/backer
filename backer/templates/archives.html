@@ -1,17 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Historique — {{ job.name }}{% endblock %}
+{% block title %}History — {{ job.name }}{% endblock %}
 {% block content %}
 
-<p><a href="{{ url_for('main.dashboard') }}">&larr; Retour au dashboard</a></p>
+<p><a href="{{ url_for('main.dashboard') }}">&larr; Back to dashboard</a></p>
 
-<h1>Historique — {{ job.name }}</h1>
+<h1>History — {{ job.name }}</h1>
 <p class="muted">
     {{ archives|length }} archive(s) — total {{ total_size|filesizeformat }}
 </p>
 
 <table class="job-table">
     <thead>
-        <tr><th>Archive</th><th>Date</th><th>Taille</th><th>OneDrive</th><th>Log</th><th></th></tr>
+        <tr><th>Archive</th><th>Date</th><th>Size</th><th>Offsite backup</th><th>Log</th><th></th></tr>
     </thead>
     <tbody>
         {% for archive in archives %}
@@ -21,29 +21,29 @@
             <td>{{ archive.size_bytes|filesizeformat }}</td>
             <td>
                 {% if archive.onedrive_at %}
-                    <span class="badge badge-success">Uploadé sur OneDrive</span>
-                    <div class="muted small">validé le {{ archive.onedrive_at.strftime('%Y-%m-%d') }} à {{ archive.onedrive_at.strftime('%H:%M:%S') }}</div>
+                    <span class="badge badge-success">Uploaded to OneDrive</span>
+                    <div class="muted small">validated on {{ archive.onedrive_at.strftime('%Y-%m-%d') }} at {{ archive.onedrive_at.strftime('%H:%M:%S') }}</div>
                 {% else %}
-                    <span class="badge badge-running">Pas encore uploadé</span>
+                    <span class="badge badge-running">Not uploaded yet</span>
                 {% endif %}
             </td>
             <td>
                 {% if archive.log_name %}
-                    <a href="{{ url_for('main.job_log_view', job_id=job.id, log_name=archive.log_name) }}">voir</a>
+                    <a href="{{ url_for('main.job_log_view', job_id=job.id, log_name=archive.log_name) }}">view</a>
                 {% else %}
                     <span class="muted">—</span>
                 {% endif %}
             </td>
             <td>
                 <form method="POST" action="{{ url_for('main.job_archive_delete', job_id=job.id) }}"
-                      onsubmit="return confirm('Supprimer cette archive définitivement ?');">
+                      onsubmit="return confirm('Permanently delete this archive?');">
                     <input type="hidden" name="archive_name" value="{{ archive.name }}">
-                    <button type="submit" class="btn-danger">Supprimer</button>
+                    <button type="submit" class="btn-danger">Delete</button>
                 </form>
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="6" class="muted">Aucune archive pour cette tâche.</td></tr>
+        <tr><td colspan="6" class="muted">No archives for this job.</td></tr>
         {% endfor %}
     </tbody>
 </table>

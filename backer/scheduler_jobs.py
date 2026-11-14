@@ -49,7 +49,7 @@ def execute_backup_job(job_id, app):
             dest_dir = host_to_container_path(job.dest_path, require_writable=True)
         except PathError as exc:
             history.status = "failed"
-            history.message = f"Chemin invalide : {exc}"
+            history.message = f"Invalid path: {exc}"
             history.finished_at = datetime.now()
             db.session.commit()
             return

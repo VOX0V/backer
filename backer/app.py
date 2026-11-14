@@ -1,7 +1,6 @@
 import os
 import re
 import secrets
-import time
 from datetime import datetime, timedelta
 
 from flask import Flask, Blueprint, render_template, request, redirect, url_for, flash, abort, jsonify
@@ -70,10 +69,10 @@ def api_status():
         ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
 
         if last_ok is None:
-            onedrive_status, uploaded_at = "aucune sauvegarde", None
+            onedrive_status, uploaded_at = "no backup", None
         else:
             uploaded_at = upload_info(last_ok.archive_name)
-            onedrive_status = "envoyée" if uploaded_at else "en attente"
+            onedrive_status = "uploaded" if uploaded_at else "pending"
 
         data[job.name] = {
             "last_success": _iso_local(last_ok.finished_at) if last_ok else None,
@@ -84,46 +83,11 @@ def api_status():
 
     state = monitor_state()
     data["onedrive_client"] = {
-        "log": "ok" if state["readable"] else "illisible",
+        "log": "ok" if state["readable"] else "unreadable",
         "last_sync": _iso_local(state["last_sync"]),
     }
     return jsonify(data)
 
-
-# Intervalle (secondes) entre deux changements de machine dans /api/status/rotation.
-ROTATION_SECONDS = 5
-
-
-@main_bp.route("/api/status/rotation")
-def api_status_rotation():
-    """Une seule machine à la fois, qui change toutes les ROTATION_SECONDS secondes
-    (ordre alphabétique des tâches). Pour un widget à rafraîchissement rapide : le
-    widget affiche chaque machine à tour de rôle. Sans login -- réseau local seulement.
-    Le nom de la machine et l'état de la connexion sont réunis dans « machine »."""
-    jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
-    if not jobs:
-        return jsonify({"machine": "Aucune tâche"})
-    job = jobs[int(time.time() // ROTATION_SECONDS) % len(jobs)]
-
-    try:
-        source_status = check_mount_status(host_to_container_path(job.source_path))
-    except PathError:
-        source_status = "error"
-    connexion = "Connecté" if source_status == "ok" else "Déconnecté"
-
-    last_ok = (
-        BackupHistory.query.filter_by(job_id=job.id, status="success")
-        .order_by(BackupHistory.finished_at.desc()).first()
-    )
-    ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
-    uploaded_at = upload_info(last_ok.archive_name) if last_ok else None
-
-    return jsonify({
-        "machine": f"{job.name} · {connexion}",
-        "last_backup": _iso_local(last_ok.finished_at) if last_ok else None,
-        "last_upload": _iso_local(uploaded_at),
-        "next_backup": _iso_local(ap_job.next_run_time) if ap_job else None,
-    })
 
 
 @main_bp.route("/")
@@ -205,13 +169,13 @@ def job_schedule(job_id):
     try:
         parse_cron_or_none(new_cron)  # valide le format avant d'enregistrer
     except ValueError as exc:
-        flash(f"Expression cron invalide pour « {job.name} » : {exc}", "error")
+        flash(f"Invalid cron expression for '{job.name}': {exc}", "error")
         return redirect(url_for("main.dashboard"))
 
     job.cron_expression = new_cron
     db.session.commit()
     register_job(job, current_app_ref()) if job.enabled else unregister_job(job.id)
-    flash(f"Planification de « {job.name} » mise à jour.", "success")
+    flash(f"Schedule for '{job.name}' updated.", "success")
     return redirect(url_for("main.dashboard"))
 
 
@@ -239,12 +203,12 @@ def job_retention(job_id):
             if value < 1:
                 raise ValueError
         except ValueError:
-            flash("La rétention doit être un nombre entier positif, ou vide pour illimité.", "error")
+            flash("Retention must be a positive whole number, or empty for unlimited.", "error")
             return redirect(url_for("main.dashboard"))
         job.retention_count = value
 
     db.session.commit()
-    flash(f"Rétention de « {job.name} » mise à jour.", "success")
+    flash(f"Retention for '{job.name}' updated.", "success")
     return redirect(url_for("main.dashboard"))
 
 
@@ -254,9 +218,9 @@ def job_run(job_id):
     job = db.session.get(BackupJob, job_id) or abort(404)
     started = run_job_async(job.id, current_app_ref())
     if started:
-        flash(f"Sauvegarde « {job.name} » lancée en arrière-plan.", "success")
+        flash(f"Backup '{job.name}' started in the background.", "success")
     else:
-        flash(f"Sauvegarde « {job.name} » déjà en cours.", "error")
+        flash(f"Backup '{job.name}' is already running.", "error")
     return redirect(url_for("main.dashboard"))
 
 
@@ -284,7 +248,7 @@ def job_archive_delete(job_id):
     try:
         dest_dir = host_to_container_path(job.dest_path)
         delete_archive(dest_dir, archive_name)
-        flash(f"Archive « {archive_name} » supprimée.", "success")
+        flash(f"Archive '{archive_name}' deleted.", "success")
     except PathError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.job_archives", job_id=job.id))
@@ -324,18 +288,18 @@ def admin_user_add():
     is_admin = bool(request.form.get("is_admin"))
 
     if not username or not password:
-        flash("Nom d'utilisateur et mot de passe requis.", "error")
+        flash("Username and password are required.", "error")
         return redirect(url_for("main.admin_home"))
 
     if User.query.filter_by(username=username).first():
-        flash("Ce nom d'utilisateur existe déjà.", "error")
+        flash("This username already exists.", "error")
         return redirect(url_for("main.admin_home"))
 
     user = User(username=username, is_admin=is_admin)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
-    flash(f"Utilisateur « {username} » créé.", "success")
+    flash(f"User '{username}' created.", "success")
     return redirect(url_for("main.admin_home"))
 
 
@@ -344,13 +308,13 @@ def admin_user_add():
 def admin_user_toggle(user_id):
     user = db.session.get(User, user_id) or abort(404)
     if user.id == current_user.id:
-        flash("Impossible de te désactiver toi-même.", "error")
+        flash("You cannot disable yourself.", "error")
         return redirect(url_for("main.admin_home"))
 
     user.is_active_ = not user.is_active_
     user.session_version += 1  # révoque immédiatement toute session ouverte
     db.session.commit()
-    flash(f"Compte « {user.username} » {'réactivé' if user.is_active_ else 'désactivé'}.", "success")
+    flash(f"Account '{user.username}' {'re-enabled' if user.is_active_ else 'disabled'}.", "success")
     return redirect(url_for("main.admin_home"))
 
 
@@ -359,11 +323,11 @@ def admin_user_toggle(user_id):
 def admin_user_delete(user_id):
     user = db.session.get(User, user_id) or abort(404)
     if user.id == current_user.id:
-        flash("Impossible de te supprimer toi-même.", "error")
+        flash("You cannot delete yourself.", "error")
         return redirect(url_for("main.admin_home"))
     db.session.delete(user)
     db.session.commit()
-    flash("Utilisateur supprimé.", "success")
+    flash("User deleted.", "success")
     return redirect(url_for("main.admin_home"))
 
 
@@ -374,7 +338,7 @@ def admin_ban_clear(ban_id):
     ban.fail_count = 0
     ban.banned_until = None
     db.session.commit()
-    flash("Bannissement levé.", "success")
+    flash("Ban lifted.", "success")
     return redirect(url_for("main.admin_home"))
 
 
@@ -396,7 +360,7 @@ def _parse_env_jobs():
         dest = os.environ.get(f"BACK{i}_DEST", "").strip()
         cron = os.environ.get(f"BACK{i}_CRON", "").strip()
         if not name or not source or not dest:
-            print(f"[Backer] BACK{i}_* incomplet dans le .env (name/source/dest requis) -- ignoré")
+            print(f"[Backer] BACK{i}_* incomplete in .env (name/source/dest required) -- ignored")
             continue
         jobs.append({"name": name, "source": source, "dest": dest, "cron": cron or None})
     return jobs
@@ -491,7 +455,7 @@ def create_app():
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": "v4.2"}
+        return {"app_version": "v4.3"}
 
     @app.before_request
     def block_banned_ips():
@@ -499,7 +463,7 @@ def create_app():
             return
         ban = get_active_ban(_client_ip())
         if ban:
-            return "Accès temporairement bloqué (trop de tentatives échouées).", 403
+            return "Access temporarily blocked (too many failed attempts).", 403
 
     @app.after_request
     def add_defensive_headers(response):
