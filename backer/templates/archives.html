@@ -11,7 +11,7 @@
 
 <table class="job-table">
     <thead>
-        <tr><th>Archive</th><th>Date</th><th>Taille</th><th>Log</th><th></th></tr>
+        <tr><th>Archive</th><th>Date</th><th>Taille</th><th>OneDrive</th><th>Log</th><th></th></tr>
     </thead>
     <tbody>
         {% for archive in archives %}
@@ -19,6 +19,14 @@
             <td class="path-cell">{{ archive.name }}</td>
             <td>{{ archive.mtime.strftime('%Y-%m-%d %H:%M') }}</td>
             <td>{{ archive.size_bytes|filesizeformat }}</td>
+            <td>
+                {% if archive.onedrive_at %}
+                    <span class="badge badge-success">envoyée</span>
+                    <span class="muted small">{{ archive.onedrive_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                {% else %}
+                    <span class="badge badge-running">en attente</span>
+                {% endif %}
+            </td>
             <td>
                 {% if archive.log_name %}
                     <a href="{{ url_for('main.job_log_view', job_id=job.id, log_name=archive.log_name) }}">voir</a>
@@ -35,7 +43,7 @@
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="5" class="muted">Aucune archive pour cette tâche.</td></tr>
+        <tr><td colspan="6" class="muted">Aucune archive pour cette tâche.</td></tr>
         {% endfor %}
     </tbody>
 </table>

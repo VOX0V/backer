@@ -82,6 +82,16 @@
                     {% if item.last_run.size_bytes %}
                         <div class="muted small">{{ item.last_run.size_bytes|filesizeformat }}</div>
                     {% endif %}
+                    {% if item.last_run.status == "success" %}
+                        <div class="small">
+                            {% if item.onedrive_uploaded_at %}
+                                <span class="badge badge-success">OneDrive ✓</span>
+                                <span class="muted">{{ item.onedrive_uploaded_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% else %}
+                                <span class="badge badge-running">OneDrive : en attente</span>
+                            {% endif %}
+                        </div>
+                    {% endif %}
                     {% if item.last_run.status == "failed" %}
                         <div class="muted small">{{ item.last_run.message }}</div>
                     {% elif item.last_run.log_name %}

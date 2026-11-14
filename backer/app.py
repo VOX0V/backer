@@ -15,7 +15,10 @@ from utils import (
 )
 from scheduler_jobs import (
     register_job, unregister_job, load_all_jobs_on_startup,
-    run_job_async, parse_cron_or_none,
+    run_job_async, parse_cron_or_none, _apscheduler_job_id,
+)
+from onedrive_monitor import (
+    scan_log, scan_log_job, upload_info, upload_times, monitor_state,
 )
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
@@ -43,6 +46,47 @@ main_bp = Blueprint("main", __name__)
 @main_bp.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+def _iso_local(dt):
+    """Date ISO avec fuseau (les dates en DB sont naïves, heure locale du conteneur)."""
+    return dt.astimezone().isoformat() if dt else None
+
+
+@main_bp.route("/api/status")
+def api_status():
+    """Statut des sauvegardes en JSON, pour tout outil externe (ex. un widget
+    Homepage). Sans login -- réseau local seulement. Une clé par tâche (nom de
+    la tâche) + une clé « onedrive_client »."""
+    scan_log()
+
+    data = {}
+    for job in BackupJob.query.order_by(BackupJob.name.asc()).all():
+        last_ok = (
+            BackupHistory.query.filter_by(job_id=job.id, status="success")
+            .order_by(BackupHistory.finished_at.desc()).first()
+        )
+        ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
+
+        if last_ok is None:
+            onedrive_status, uploaded_at = "aucune sauvegarde", None
+        else:
+            uploaded_at = upload_info(last_ok.archive_name)
+            onedrive_status = "envoyée" if uploaded_at else "en attente"
+
+        data[job.name] = {
+            "last_success": _iso_local(last_ok.finished_at) if last_ok else None,
+            "next_run": _iso_local(ap_job.next_run_time) if ap_job else None,
+            "onedrive": onedrive_status,
+            "onedrive_uploaded_at": _iso_local(uploaded_at),
+        }
+
+    state = monitor_state()
+    data["onedrive_client"] = {
+        "log": "ok" if state["readable"] else "illisible",
+        "last_sync": _iso_local(state["last_sync"]),
+    }
+    return jsonify(data)
 
 
 @main_bp.route("/")
@@ -81,8 +125,13 @@ def dashboard():
         if archive_count > 0 and job.retention_count:
             estimated_total = round((total_size / archive_count) * job.retention_count)
 
+        onedrive_uploaded_at = None
+        if last_run and last_run.status == "success":
+            onedrive_uploaded_at = upload_info(last_run.archive_name)
+
         jobs_view.append({
             "job": job, "last_run": last_run, "total_size": total_size,
+            "onedrive_uploaded_at": onedrive_uploaded_at,
             "archive_count": archive_count, "estimated_total": estimated_total,
             "cron_readable": translate_cron(job.cron_expression),
             "source_connected": source_connected,
@@ -184,6 +233,9 @@ def job_archives(job_id):
     except PathError as exc:
         flash(str(exc), "error")
         archives, total_size = [], 0
+    uploaded = upload_times([a["name"] for a in archives])
+    for a in archives:
+        a["onedrive_at"] = uploaded.get(a["name"])
     return render_template("archives.html", job=job, archives=archives, total_size=total_size)
 
 
@@ -402,7 +454,7 @@ def create_app():
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": "v4"}
+        return {"app_version": "v4.1"}
 
     @app.before_request
     def block_banned_ips():
@@ -440,6 +492,12 @@ def create_app():
         scheduler.init_app(app)
         scheduler.start()
     load_all_jobs_on_startup(app)
+
+    # Lecture périodique du log OneDrive (confirmation des uploads).
+    scheduler.add_job(
+        id="onedrive_log_scan", func=scan_log_job, args=[app],
+        trigger="interval", seconds=60, replace_existing=True,
+    )
 
     return app
 
