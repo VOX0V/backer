@@ -108,3 +108,12 @@ class BackupHistory(db.Model):
     archive_name = db.Column(db.String(255), nullable=True)
     log_name = db.Column(db.String(255), nullable=True)
     size_bytes = db.Column(db.BigInteger, nullable=True)
+
+
+class OneDriveUpload(db.Model):
+    """Archive dont l'envoi vers OneDrive est confirmé par le log du client OneDrive."""
+    __tablename__ = "onedrive_uploads"
+
+    id = db.Column(db.Integer, primary_key=True)
+    archive_name = db.Column(db.String(255), unique=True, nullable=False)
+    uploaded_at = db.Column(db.DateTime, nullable=False)

@@ -3,7 +3,6 @@ from functools import wraps
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, abort
 from flask_login import login_user, logout_user, login_required, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
 
 from extensions import db, login_manager
 from models import User, LoginHistory, IPBan
@@ -12,17 +11,6 @@ auth_bp = Blueprint("auth", __name__)
 
 BAN_THRESHOLD = 3
 BAN_DURATION_MINUTES = 60
-
-# Hachage factice calculé une seule fois au démarrage, utilisé quand le
-# nom d'utilisateur soumis n'existe pas -- sans ça, aucun calcul PBKDF2
-# n'a lieu dans ce cas (court-circuit du "and" plus bas), ce qui rend le
-# temps de réponse mesurablement différent d'un mauvais mot de passe sur
-# un compte existant et permet de deviner quels comptes existent
-# (énumération par timing). Le mot de passe factice n'a pas besoin d'être
-# secret : il ne sert jamais à authentifier qui que ce soit.
-_DUMMY_HASH = generate_password_hash(
-    "dummy_password_never_used_for_auth", method="pbkdf2:sha256"
-)
 
 
 @login_manager.user_loader
@@ -107,17 +95,7 @@ def login():
         password = request.form.get("password", "")
 
         user = User.query.filter_by(username=username).first()
-
-        # Un hachage tourne systématiquement, que le compte existe ou non,
-        # pour que le temps de réponse ne révèle jamais quels comptes
-        # existent (mitigation de la fuite de timing).
-        if user is not None:
-            password_ok = check_password_hash(user.password_hash, password)
-        else:
-            check_password_hash(_DUMMY_HASH, password)
-            password_ok = False
-
-        success = bool(user and user.is_active_ and password_ok)
+        success = bool(user and user.is_active_ and user.check_password(password))
 
         db.session.add(LoginHistory(
             username_attempted=username, ip_address=ip_address, success=success,
