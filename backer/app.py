@@ -1,6 +1,7 @@
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timedelta
 
 from flask import Flask, Blueprint, render_template, request, redirect, url_for, flash, abort, jsonify
@@ -87,6 +88,42 @@ def api_status():
         "last_sync": _iso_local(state["last_sync"]),
     }
     return jsonify(data)
+
+
+# Intervalle (secondes) entre deux changements de machine dans /api/status/rotation.
+ROTATION_SECONDS = 5
+
+
+@main_bp.route("/api/status/rotation")
+def api_status_rotation():
+    """Une seule machine à la fois, qui change toutes les ROTATION_SECONDS secondes
+    (ordre alphabétique des tâches). Pour un widget à rafraîchissement rapide : le
+    widget affiche chaque machine à tour de rôle. Sans login -- réseau local seulement.
+    Le nom de la machine et l'état de la connexion sont réunis dans « machine »."""
+    jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
+    if not jobs:
+        return jsonify({"machine": "Aucune tâche"})
+    job = jobs[int(time.time() // ROTATION_SECONDS) % len(jobs)]
+
+    try:
+        source_status = check_mount_status(host_to_container_path(job.source_path))
+    except PathError:
+        source_status = "error"
+    connexion = "Connecté" if source_status == "ok" else "Déconnecté"
+
+    last_ok = (
+        BackupHistory.query.filter_by(job_id=job.id, status="success")
+        .order_by(BackupHistory.finished_at.desc()).first()
+    )
+    ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
+    uploaded_at = upload_info(last_ok.archive_name) if last_ok else None
+
+    return jsonify({
+        "machine": f"{job.name} · {connexion}",
+        "last_backup": _iso_local(last_ok.finished_at) if last_ok else None,
+        "last_upload": _iso_local(uploaded_at),
+        "next_backup": _iso_local(ap_job.next_run_time) if ap_job else None,
+    })
 
 
 @main_bp.route("/")
@@ -454,7 +491,7 @@ def create_app():
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": "v4.1"}
+        return {"app_version": "v4.2"}
 
     @app.before_request
     def block_banned_ips():
