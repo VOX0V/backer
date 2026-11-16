@@ -8,6 +8,9 @@
 # offsite_storage_gb  (optional) total size of your online storage, in GB
 #                     (1 GB = 1024^3 bytes, like the OneDrive client). Used to
 #                     show the remaining space.
+# alerts              (optional) thresholds of the health indicator and of the
+#                     e-mail alerts; the defaults are shown in the commented
+#                     block below. E-mail settings (Gmail...) go in the .env file.
 #
 # Jobs:
 #
@@ -24,6 +27,14 @@
 
 staging_dir: /mnt/hdd/backer_tmp
 offsite_storage_gb: 1029
+
+# alerts:
+#   max_age_hours: 36                  # critical if no successful backup for this long
+#   size_drop_percent: 50              # warn if an archive loses at least this % of size
+#   disk_free_percent: 10              # warn below this % of free space
+#   disk_critical_percent: 5           # critical below this % of free space
+#   upload_unconfirmed_factor: 3       # upload not confirmed after N x the average delay...
+#   upload_unconfirmed_min_minutes: 10 # ...with this minimum
 
 jobs:
   - name: DebServ

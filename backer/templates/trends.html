@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Trends — Backer{% endblock %}
+{% block content %}
+
+<h1>Trends</h1>
+<p class="muted small">Archive size and backup duration over the last 30 successful backups of each job.</p>
+
+{% for chart in charts %}
+<section class="panel-card trend-card">
+    <h2>{{ chart.job.name }}</h2>
+    {% if chart.count < 2 %}
+        <p class="muted">Not enough successful backups yet ({{ chart.count }}).</p>
+    {% else %}
+    <p class="muted small">{{ chart.count }} backups, from {{ chart.first.strftime('%Y-%m-%d') }} to {{ chart.last.strftime('%Y-%m-%d') }}</p>
+    <div class="trend-grid">
+        <div>
+            <h3>Archive size</h3>
+            {% if chart.size %}
+            <svg viewBox="0 0 {{ chart.size.width }} {{ chart.size.height }}" class="trend-svg" role="img" aria-label="Archive size of {{ chart.job.name }}">
+                <polyline points="{{ chart.size.points }}" fill="none" stroke="#3b82f6" stroke-width="2"></polyline>
+                <circle cx="{{ chart.size.last[0] }}" cy="{{ chart.size.last[1] }}" r="3.5" fill="#3b82f6"></circle>
+            </svg>
+            <p class="muted small">
+                min {{ chart.size.min|filesizeformat }} · max {{ chart.size.max|filesizeformat }} · latest {{ chart.size.latest|filesizeformat }}
+            </p>
+            {% else %}<p class="muted">No size data.</p>{% endif %}
+        </div>
+        <div>
+            <h3>Backup duration</h3>
+            {% if chart.duration %}
+            <svg viewBox="0 0 {{ chart.duration.width }} {{ chart.duration.height }}" class="trend-svg" role="img" aria-label="Backup duration of {{ chart.job.name }}">
+                <polyline points="{{ chart.duration.points }}" fill="none" stroke="#10b981" stroke-width="2"></polyline>
+                <circle cx="{{ chart.duration.last[0] }}" cy="{{ chart.duration.last[1] }}" r="3.5" fill="#10b981"></circle>
+            </svg>
+            <p class="muted small">
+                min {{ chart.duration.min|duration }} · max {{ chart.duration.max|duration }} · latest {{ chart.duration.latest|duration }}
+            </p>
+            {% else %}<p class="muted">No duration data.</p>{% endif %}
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% else %}
+<p class="muted">No jobs to show.</p>
+{% endfor %}
+
+{% endblock %}

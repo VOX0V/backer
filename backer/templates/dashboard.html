@@ -84,6 +84,12 @@
                 {% else %}
                     <span class="state-text state-error">Disconnected</span>
                 {% endif %}
+                <div class="small">
+                    <span class="state-text state-{{ 'warn' if item.health == 'warning' else ('error' if item.health == 'critical' else 'ok') }}">Health: {{ item.health }}</span>
+                </div>
+                {% if item.health_reasons %}
+                    <div class="muted small">{{ item.health_reasons|join(', ') }}</div>
+                {% endif %}
             </td>
             <td class="path-cell">{{ item.job.source_path }}</td>
             <td class="path-cell">{{ item.job.dest_path }}</td>
@@ -105,7 +111,7 @@
                         <div class="muted small">average duration {{ item.avg_text }}</div>
                     {% endif %}
                     {% if item.last_run.status == "running" %}
-                        <div class="progress" data-elapsed="{{ item.elapsed_seconds or 0 }}" data-avg="{{ item.avg_seconds or 0 }}">
+                        <div class="progress" data-kind="backup" data-elapsed="{{ item.snap.backup_elapsed or 0 }}" data-avg="{{ item.snap.backup_avg or 0 }}">
                             <div class="progress-track"><div class="progress-bar"></div></div>
                             <div class="progress-text muted small"></div>
                         </div>
@@ -122,15 +128,27 @@
                 {% endif %}
             </td>
             <td>
-                {% if item.last_run and item.last_run.status == "success" %}
-                    {% if item.onedrive_uploaded_at %}
-                        <span class="badge badge-success">Uploaded to OneDrive</span>
-                        <div class="muted small">validated on {{ item.onedrive_uploaded_at.strftime('%Y-%m-%d') }} at {{ item.onedrive_uploaded_at.strftime('%H:%M:%S') }}</div>
-                    {% else %}
-                        <span class="badge badge-running">Not uploaded to OneDrive yet</span>
-                    {% endif %}
+                {% set s = item.snap %}
+                {% if s.upload_state == "uploaded" %}
+                    <span class="badge badge-success">Uploaded to OneDrive</span>
+                    <div class="muted small">validated on {{ s.uploaded_at.strftime('%Y-%m-%d') }} at {{ s.uploaded_at.strftime('%H:%M:%S') }}</div>
+                {% elif s.upload_state == "failed" %}
+                    <span class="badge badge-failed">Upload failed</span>
+                    <div class="muted small">on {{ s.failed_at.strftime('%Y-%m-%d') }} at {{ s.failed_at.strftime('%H:%M:%S') }}</div>
+                {% elif s.upload_state == "pending" %}
+                    <span class="badge badge-running">Uploading to OneDrive</span>
+                    <div class="progress" data-kind="upload" data-elapsed="{{ s.upload_elapsed or 0 }}" data-avg="{{ s.upload_avg or 0 }}" data-limit="{{ s.upload_limit }}">
+                        <div class="progress-track"><div class="progress-bar"></div></div>
+                        <div class="progress-text muted small"></div>
+                    </div>
+                {% elif s.upload_state == "unconfirmed" %}
+                    <span class="badge badge-failed">No upload confirmation</span>
+                    <div class="muted small">backup finished on {{ s.last_ok.finished_at.strftime('%Y-%m-%d at %H:%M:%S') }}</div>
                 {% else %}
                     <span class="muted">—</span>
+                {% endif %}
+                {% if item.avg_upload_text %}
+                    <div class="muted small">average upload {{ item.avg_upload_text }}</div>
                 {% endif %}
             </td>
             <td>{{ item.archive_count }}</td>
@@ -223,14 +241,22 @@
     }
     function tick() {
         bars.forEach(function (el) {
+            var upload = el.dataset.kind === "upload";
             var elapsed = parseFloat(el.dataset.elapsed) + (Date.now() - loadedAt) / 1000;
             var avg = parseFloat(el.dataset.avg);
+            var limit = parseFloat(el.dataset.limit || "0");
             var bar = el.querySelector(".progress-bar");
             var text = el.querySelector(".progress-text");
+            if (limit && elapsed > limit) {
+                bar.style.width = "100%";
+                el.classList.add("late");
+                text.textContent = "no confirmation after " + fmt(elapsed);
+                return;
+            }
             if (!avg) {
                 bar.style.width = "100%";
                 el.classList.add("indeterminate");
-                text.textContent = "running for " + fmt(elapsed) + " (no average yet)";
+                text.textContent = (upload ? "waiting for confirmation: " : "running for ") + fmt(elapsed) + " (no average yet)";
                 return;
             }
             bar.style.width = Math.min(100, elapsed / avg * 100) + "%";

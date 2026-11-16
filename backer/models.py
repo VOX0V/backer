@@ -117,3 +117,22 @@ class OneDriveUpload(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     archive_name = db.Column(db.String(255), unique=True, nullable=False)
     uploaded_at = db.Column(db.DateTime, nullable=False)
+
+
+class OneDriveUploadFailure(db.Model):
+    """Archive dont l'envoi vers OneDrive a échoué d'après le log du client."""
+    __tablename__ = "onedrive_upload_failures"
+
+    id = db.Column(db.Integer, primary_key=True)
+    archive_name = db.Column(db.String(255), unique=True, nullable=False)
+    failed_at = db.Column(db.DateTime, nullable=False)
+
+
+class AlertState(db.Model):
+    """Mémoire des alertes e-mail déjà envoyées (une seule fois par incident)."""
+    __tablename__ = "alert_states"
+
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(255), unique=True, nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.now)

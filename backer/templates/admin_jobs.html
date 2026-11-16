@@ -25,4 +25,14 @@
     </div>
 </form>
 
+<h2>E-mail alerts</h2>
+<p class="muted small">
+    Alerts (backup failed, upload not confirmed, archive much smaller, disk almost full) are sent by e-mail.
+    Settings (<code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>ALERT_TO</code>...) are in the <code>.env</code> file.
+    Status: <strong>{{ "configured" if smtp_configured else "not configured" }}</strong>.
+</p>
+<form method="POST" action="{{ url_for('main.admin_test_email') }}">
+    <button type="submit">Send test email</button>
+</form>
+
 {% endblock %}

@@ -16,7 +16,10 @@ from utils import (
     translate_cron, check_mount_status, PathError,
 )
 from scheduler_jobs import run_job_async, is_job_running, _apscheduler_job_id
+import alerts
 import jobs_config
+import monitoring
+import notifier
 import settings_store
 from jobs_config import (
     JOBS_FILE, EXAMPLE_YAML, parse_jobs_yaml, read_jobs_file, write_jobs_file,
@@ -26,7 +29,7 @@ from onedrive_monitor import (
     scan_log, scan_log_job, upload_info, upload_times, monitor_state,
 )
 
-APP_VERSION = "v4.5"
+APP_VERSION = "v4.6"
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "secret_key")
@@ -55,20 +58,6 @@ def health():
     return jsonify({"status": "ok"})
 
 
-def _average_duration(job_id, limit=10):
-    """Durée moyenne (secondes) des dernières sauvegardes réussies, ou None."""
-    rows = (
-        BackupHistory.query.filter_by(job_id=job_id, status="success")
-        .filter(BackupHistory.finished_at.isnot(None))
-        .order_by(BackupHistory.finished_at.desc()).limit(limit).all()
-    )
-    durations = [
-        (r.finished_at - r.started_at).total_seconds()
-        for r in rows if r.started_at and r.finished_at
-    ]
-    return round(sum(durations) / len(durations)) if durations else None
-
-
 _PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16"]
 
 
@@ -94,6 +83,25 @@ def _build_pie(items):
             angle = end
         pie.append(entry)
     return pie
+
+
+def _sparkline(values, width=320, height=90, pad=8):
+    """Courbe SVG simple. Retourne None s'il y a moins de deux valeurs."""
+    if len(values) < 2:
+        return None
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    n = len(values)
+    points = []
+    for i, value in enumerate(values):
+        x = pad + i * (width - 2 * pad) / (n - 1)
+        y = height / 2 if span == 0 else height - pad - (value - lo) / span * (height - 2 * pad)
+        points.append((round(x, 1), round(y, 1)))
+    return {
+        "width": width, "height": height,
+        "points": " ".join(f"{x},{y}" for x, y in points),
+        "last": points[-1], "min": lo, "max": hi, "latest": values[-1],
+    }
 
 
 def _offsite_summary(used_bytes):
@@ -127,89 +135,74 @@ def _visible_jobs():
     return BackupJob.query.order_by(BackupJob.name.asc()).all()
 
 
-# Fenêtre (en jours) pour compter les échecs récents dans /api/status.
-FAILURE_WINDOW_DAYS = 7
+_ONEDRIVE_LABELS = {
+    "none": "no backup", "uploaded": "uploaded", "pending": "pending",
+    "unconfirmed": "unconfirmed", "failed": "failed",
+}
+_HEALTH_RANK = {"ok": 0, "disabled": 0, "warning": 1, "critical": 2}
 
 
 @main_bp.route("/api/status")
 def api_status():
     """Statut des sauvegardes en JSON, pour tout outil externe (ex. un widget
     Homepage). Sans login -- réseau local seulement. Une clé par tâche (nom de
-    la tâche), plus « onedrive_client » (log du client OneDrive) et « backer »."""
+    la tâche), plus « onedrive_client », « offsite_storage » et « backer »."""
     scan_log()
     now = datetime.now()
 
     jobs = _visible_jobs()
     data = {}
     grand_total = 0
+    worst = "ok"
+
     for job in jobs:
-        base = BackupHistory.query.filter_by(job_id=job.id)
-        successes = (
-            base.filter_by(status="success")
-            .order_by(BackupHistory.finished_at.desc()).limit(2).all()
-        )
-        last_ok = successes[0] if successes else None
-        prev_ok = successes[1] if len(successes) > 1 else None
-        last_fail = base.filter_by(status="failed").order_by(BackupHistory.started_at.desc()).first()
-        recent_failures = base.filter(
-            BackupHistory.status == "failed",
-            BackupHistory.started_at >= now - timedelta(days=FAILURE_WINDOW_DAYS),
-        ).count()
+        snap = monitoring.snapshot(job, now)
+        health_status, health_reasons = monitoring.health(job, snap)
+        grand_total += snap["archives_total"]
+        if _HEALTH_RANK[health_status] > _HEALTH_RANK[worst]:
+            worst = health_status
 
-        ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
-
-        try:
-            source_status = check_mount_status(host_to_container_path(job.source_path))
-        except PathError:
-            source_status = "error"
-
-        archive_count, archives_total, du = 0, 0, None
-        try:
-            dest_dir = host_to_container_path(job.dest_path)
-            archives, archives_total = list_job_archives(dest_dir, job.name)
-            archive_count = len(archives)
-            if os.path.isdir(dest_dir):
-                du = shutil.disk_usage(dest_dir)
-        except (PathError, OSError):
-            pass
-
-        grand_total += archives_total
-
-        if last_ok is None:
-            onedrive_status, uploaded_at = "no backup", None
-        else:
-            uploaded_at = upload_info(last_ok.archive_name)
-            onedrive_status = "uploaded" if uploaded_at else "pending"
-
-        last_size = last_ok.size_bytes if last_ok else None
-        prev_size = prev_ok.size_bytes if prev_ok else None
+        last_ok, last_fail, du = snap["last_ok"], snap["last_fail"], snap["disk"]
+        last_size, prev_size = snap["last_size"], snap["prev_size"]
 
         data[job.name] = {
+            "health": health_status,  # ok / warning / critical / disabled
+            "health_reasons": health_reasons,
             "enabled": job.enabled,
-            "running": is_job_running(job.id),
-            "source_status": source_status,  # ok / empty / error
+            "running": snap["running"],
+            "source_status": snap["source_status"],  # ok / empty / error
             "cron": job.cron_expression,
             "cron_readable": translate_cron(job.cron_expression),
             "retention": job.retention_count,
             "last_success": _iso_local(last_ok.finished_at) if last_ok else None,
             "last_success_age_seconds": _seconds_between(now, last_ok.finished_at) if last_ok else None,
-            "next_run": _iso_local(ap_job.next_run_time) if ap_job else None,
+            "next_run": _iso_local(snap["next_run"]),
             "last_duration_seconds": _seconds_between(last_ok.finished_at, last_ok.started_at) if last_ok else None,
-            "average_duration_seconds": _average_duration(job.id),
+            "average_duration_seconds": snap["backup_avg"],
+            "backup_elapsed_seconds": snap["backup_elapsed"],
+            "backup_remaining_seconds": snap["backup_remaining"],
+            "backup_overdue": snap["backup_overdue"],
             "last_size_bytes": last_size,
             "previous_size_bytes": prev_size,
             "size_change_bytes": (last_size - prev_size) if last_size is not None and prev_size is not None else None,
-            "archive_count": archive_count,
-            "archives_total_bytes": archives_total,
-            "failures_last_7_days": recent_failures,
+            "size_drop": snap["size_drop"],
+            "archive_count": snap["archive_count"],
+            "archives_total_bytes": snap["archives_total"],
+            "failures_last_7_days": snap["recent_failures"],
             "last_failure_at": _iso_local(last_fail.started_at) if last_fail else None,
             "last_failure_message": last_fail.message if last_fail else None,
             "dest_free_bytes": du.free if du else None,
             "dest_total_bytes": du.total if du else None,
             "dest_used_bytes": du.used if du else None,
-            "onedrive": onedrive_status,
-            "onedrive_uploaded_at": _iso_local(uploaded_at),
-            "onedrive_delay_seconds": _seconds_between(uploaded_at, last_ok.finished_at) if last_ok and uploaded_at else None,
+            "dest_free_percent": snap["dest_free_percent"],
+            "onedrive": _ONEDRIVE_LABELS[snap["upload_state"]],
+            "onedrive_uploaded_at": _iso_local(snap["uploaded_at"]),
+            "onedrive_failed_at": _iso_local(snap["failed_at"]),
+            "onedrive_delay_seconds": snap["last_delay"],
+            "average_upload_seconds": snap["upload_avg"],
+            "upload_elapsed_seconds": snap["upload_elapsed"],
+            "upload_remaining_seconds": snap["upload_remaining"],
+            "upload_overdue": snap["upload_overdue"],
         }
 
     state = monitor_state()
@@ -237,7 +230,9 @@ def api_status():
     }
     data["backer"] = {
         "version": APP_VERSION,
+        "health": worst,  # le pire état parmi les tâches
         "staging_dir": settings_store.settings.get("staging_dir"),
+        "email_alerts_configured": notifier.is_configured(),
         "jobs_file": jobs_config.status["state"],  # ok / missing / invalid
         "jobs_total": len(jobs),
         "jobs_enabled": sum(1 for j in jobs if j.enabled),
@@ -248,57 +243,37 @@ def api_status():
 @main_bp.route("/")
 @login_required
 def dashboard():
+    now = datetime.now()
     jobs = _visible_jobs()
     jobs_view = []
     grand_total = 0
-    any_running = False
+    any_active = False
 
     for job in jobs:
-        last_run = job.history[0] if job.history else None
-        if last_run and last_run.status == "running":
-            any_running = True
+        snap = monitoring.snapshot(job, now)
+        health_status, health_reasons = monitoring.health(job, snap)
+        if snap["running"] or snap["upload_state"] == "pending":
+            any_active = True
 
-        total_size = 0
-        archive_count = 0
-        source_status = "error"
-        try:
-            dest_dir = host_to_container_path(job.dest_path)
-            archives, total_size = list_job_archives(dest_dir, job.name)
-            archive_count = len(archives)
-        except PathError:
-            pass
-        try:
-            source_container_path = host_to_container_path(job.source_path)
-            source_status = check_mount_status(source_container_path)
-        except PathError:
-            source_status = "error"
-        # "empty" et "error" sont tous deux affichés comme Déconnecté --
-        # dans les deux cas la source n'est pas fiable pour une sauvegarde.
-        source_connected = source_status == "ok"
+        total_size = snap["archives_total"]
+        archive_count = snap["archive_count"]
         grand_total += total_size
 
         estimated_total = None
         if archive_count > 0 and job.retention_count:
             estimated_total = round((total_size / archive_count) * job.retention_count)
 
-        onedrive_uploaded_at = None
-        if last_run and last_run.status == "success":
-            onedrive_uploaded_at = upload_info(last_run.archive_name)
-
-        avg_seconds = _average_duration(job.id)
-        elapsed_seconds = None
-        if last_run and last_run.status == "running":
-            elapsed_seconds = max(0, int((datetime.now() - last_run.started_at).total_seconds()))
-
         jobs_view.append({
-            "avg_seconds": avg_seconds,
-            "avg_text": format_duration(avg_seconds) if avg_seconds else None,
-            "elapsed_seconds": elapsed_seconds,
-            "job": job, "last_run": last_run, "total_size": total_size,
-            "onedrive_uploaded_at": onedrive_uploaded_at,
-            "archive_count": archive_count, "estimated_total": estimated_total,
+            "job": job, "snap": snap, "last_run": snap["last_run"],
+            "total_size": total_size, "archive_count": archive_count,
+            "estimated_total": estimated_total,
             "cron_readable": translate_cron(job.cron_expression),
-            "source_connected": source_connected,
+            # "empty" et "error" sont tous deux affichés comme Disconnected --
+            # dans les deux cas la source n'est pas fiable pour une sauvegarde.
+            "source_connected": snap["source_status"] == "ok",
+            "health": health_status, "health_reasons": health_reasons,
+            "avg_text": format_duration(snap["backup_avg"]) if snap["backup_avg"] else None,
+            "avg_upload_text": format_duration(snap["upload_avg"]) if snap["upload_avg"] else None,
         })
 
     last_failed_login = (
@@ -308,11 +283,35 @@ def dashboard():
 
     return render_template(
         "dashboard.html", jobs_view=jobs_view, grand_total=grand_total,
-        any_running=any_running, last_failed_login=last_failed_login,
+        any_running=any_active, last_failed_login=last_failed_login,
         jobs_status=jobs_config.status, jobs_file=JOBS_FILE,
         pie=_build_pie([(i["job"].name, i["total_size"]) for i in jobs_view]),
         offsite=_offsite_summary(grand_total),
     )
+
+
+@main_bp.route("/trends")
+@login_required
+def trends():
+    """Courbes de la taille des archives et de la durée des sauvegardes
+    (30 dernières réussites de chaque tâche)."""
+    charts = []
+    for job in _visible_jobs():
+        rows = (
+            BackupHistory.query.filter_by(job_id=job.id, status="success")
+            .filter(BackupHistory.finished_at.isnot(None))
+            .order_by(BackupHistory.finished_at.desc()).limit(30).all()
+        )
+        rows.reverse()
+        sizes = [r.size_bytes for r in rows if r.size_bytes is not None]
+        durations = [(r.finished_at - r.started_at).total_seconds() for r in rows if r.started_at]
+        charts.append({
+            "job": job, "count": len(rows),
+            "first": rows[0].finished_at if rows else None,
+            "last": rows[-1].finished_at if rows else None,
+            "size": _sparkline(sizes), "duration": _sparkline(durations),
+        })
+    return render_template("trends.html", charts=charts)
 
 
 @main_bp.route("/security/alert/dismiss", methods=["POST"])
@@ -499,6 +498,20 @@ def admin_jobs():
     )
 
 
+@main_bp.route("/admin/test-email", methods=["POST"])
+@admin_required
+def admin_test_email():
+    ok, error = notifier.send_email(
+        "[Backer] Test e-mail",
+        "This is a test e-mail from Backer. If you can read it, e-mail alerts are working.\n",
+    )
+    if ok:
+        flash("Test e-mail sent.", "success")
+    else:
+        flash(f"Test e-mail failed: {error}", "error")
+    return redirect(url_for("main.admin_jobs"))
+
+
 # ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
@@ -548,10 +561,11 @@ def create_app():
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
+    app.jinja_env.filters["duration"] = format_duration
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": APP_VERSION}
+        return {"app_version": APP_VERSION, "smtp_configured": notifier.is_configured()}
 
     @app.before_request
     def block_banned_ips():
@@ -589,6 +603,12 @@ def create_app():
         scheduler.start()
     with app.app_context():
         init_jobs(app)
+
+    # Vérification périodique des alertes e-mail.
+    scheduler.add_job(
+        id="backer_alert_check", func=alerts.check_alerts_job, args=[app],
+        trigger="interval", seconds=120, replace_existing=True,
+    )
 
     # Lecture périodique du log OneDrive (confirmation des uploads).
     scheduler.add_job(

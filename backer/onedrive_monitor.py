@@ -20,13 +20,15 @@ import threading
 from datetime import datetime
 
 from extensions import db
-from models import OneDriveUpload
+from models import OneDriveUpload, OneDriveUploadFailure
 
 LOG_FILE = os.environ.get("ONEDRIVE_LOG_FILE", "/onedrive-log/onedrive.onedrive.log")
 
 # Ex : [2026-Nov-14 10:04:45.9854377] Uploading new file: ./backups/netsec/X.zip ... done
 _LINE_RE = re.compile(r"^\[(\d{4})-([A-Za-z]{3})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.\d+\] (.*)$")
 _UPLOAD_DONE_RE = re.compile(r"^Uploading new file: (.+) \.\.\. done$")
+_UPLOAD_FAILED_RE = re.compile(r"^Uploading new file: (.+) \.\.\. failed!$")
+_FAILED_TO_UPLOAD_RE = re.compile(r"^Failed to upload: (.+)$")
 _SYNC_COMPLETE = "Sync with Microsoft OneDrive is complete"
 _REACH = "Successfully reached the Microsoft OneDrive Service"
 _ITEMS_RE = re.compile(r"^Processed (\d+) applicable JSON items received from Microsoft OneDrive")
@@ -84,6 +86,7 @@ def scan_log():
             return True
 
         uploads = []
+        failures = []
         updates = {}
         for raw in data[:end].decode("utf-8", errors="replace").splitlines():
             m = _LINE_RE.match(raw)
@@ -106,6 +109,13 @@ def scan_log():
                 name = os.path.basename(u.group(1))
                 if name.endswith(".zip"):
                     uploads.append((name, ts))
+                continue
+
+            f1 = _UPLOAD_FAILED_RE.match(msg) or _FAILED_TO_UPLOAD_RE.match(msg)
+            if f1:
+                fname = os.path.basename(f1.group(1))
+                if fname.endswith(".zip"):  # les fichiers temporaires de zip sont ignorés
+                    failures.append((fname, ts))
                 continue
 
             i = _ITEMS_RE.match(msg)
@@ -131,13 +141,25 @@ def scan_log():
                 updates["free_space"] = {"bytes": int(fr.group(1)), "at": ts}
 
         try:
+            for name, ts in failures:
+                done = OneDriveUpload.query.filter_by(archive_name=name).first()
+                if done and done.uploaded_at >= ts:
+                    continue
+                row = OneDriveUploadFailure.query.filter_by(archive_name=name).first()
+                if row:
+                    row.failed_at = ts
+                else:
+                    db.session.add(OneDriveUploadFailure(archive_name=name, failed_at=ts))
             for name, ts in uploads:
                 row = OneDriveUpload.query.filter_by(archive_name=name).first()
                 if row:
                     row.uploaded_at = ts
                 else:
                     db.session.add(OneDriveUpload(archive_name=name, uploaded_at=ts))
-            if uploads:
+                failed = OneDriveUploadFailure.query.filter_by(archive_name=name).first()
+                if failed and failed.failed_at <= ts:
+                    db.session.delete(failed)  # un envoi réussi annule l'échec précédent
+            if uploads or failures:
                 db.session.commit()
         except Exception:
             # Ex. course entre deux processus : on ne fait pas avancer la position,
@@ -162,6 +184,14 @@ def upload_info(archive_name):
         return None
     row = OneDriveUpload.query.filter_by(archive_name=archive_name).first()
     return row.uploaded_at if row else None
+
+
+def upload_failure_info(archive_name):
+    """Date de l'échec d'envoi (datetime) pour cette archive, ou None."""
+    if not archive_name:
+        return None
+    row = OneDriveUploadFailure.query.filter_by(archive_name=archive_name).first()
+    return row.failed_at if row else None
 
 
 def upload_times(archive_names):

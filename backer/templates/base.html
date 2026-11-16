@@ -13,6 +13,7 @@
         <div class="topnav-brand"><a href="{{ url_for('main.dashboard') }}">Backer</a> <span class="version-tag">{{ app_version }}</span></div>
         <div class="topnav-links">
             <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
+            <a href="{{ url_for('main.trends') }}">Trends</a>
             {% if current_user.is_admin %}
                 <a href="{{ url_for('main.admin_home') }}">Admin</a>
                 <a href="{{ url_for('main.admin_jobs') }}">Jobs</a>

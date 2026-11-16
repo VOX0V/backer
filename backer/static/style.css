@@ -254,3 +254,19 @@ button:hover { opacity: 0.9; }
 }
 .meter-fill { height: 100%; background: #10b981; }
 
+.state-warn { color: #f59e0b; font-weight: 600; }
+.progress.late .progress-bar { background: #ef4444; }
+
+.trend-card { margin-bottom: 16px; }
+.trend-grid { display: flex; flex-wrap: wrap; gap: 24px; }
+.trend-grid > div { flex: 1 1 320px; }
+.trend-grid h3 { margin: 0 0 6px; font-size: 0.95rem; }
+.trend-svg {
+    width: 100%;
+    max-width: 480px;
+    height: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+

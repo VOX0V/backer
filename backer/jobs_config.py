@@ -43,6 +43,9 @@ EXAMPLE_YAML = """\
 # offsite_storage_gb  (optional) total size of your online storage, in GB
 #                     (1 GB = 1024^3 bytes, like the OneDrive client). Used to
 #                     show the remaining space.
+# alerts              (optional) thresholds of the health indicator and of the
+#                     e-mail alerts; the defaults are shown in the commented
+#                     block below. E-mail settings (Gmail...) go in the .env file.
 #
 # Jobs:
 #
@@ -59,6 +62,14 @@ EXAMPLE_YAML = """\
 
 staging_dir: /mnt/hdd/backer_tmp
 offsite_storage_gb: 1029
+
+# alerts:
+#   max_age_hours: 36                  # critical if no successful backup for this long
+#   size_drop_percent: 50              # warn if an archive loses at least this % of size
+#   disk_free_percent: 10              # warn below this % of free space
+#   disk_critical_percent: 5           # critical below this % of free space
+#   upload_unconfirmed_factor: 3       # upload not confirmed after N x the average delay...
+#   upload_unconfirmed_min_minutes: 10 # ...with this minimum
 
 jobs:
   - name: DebServ
@@ -118,7 +129,7 @@ def parse_jobs_yaml(text):
         return [], {}, ["The 'jobs:' list is empty: define at least one job."]
 
     errors = []
-    extra_top = set(data) - {"jobs", "staging_dir", "offsite_storage_gb"}
+    extra_top = set(data) - {"jobs", "staging_dir", "offsite_storage_gb", "alerts"}
     if extra_top:
         errors.append("Unknown top-level key(s): " + ", ".join(sorted(map(str, extra_top))))
 
@@ -261,6 +272,24 @@ def parse_jobs_yaml(text):
             errors.append("'offsite_storage_gb' must be a number greater than 0 (size in GB).")
         else:
             settings["offsite_storage_gb"] = float(offsite)
+
+    # --- alerts (seuils du voyant de santé et des e-mails)
+    alerts_cfg = dict(settings_store.DEFAULT_ALERTS)
+    alerts = data.get("alerts")
+    if alerts is not None:
+        if not isinstance(alerts, dict):
+            errors.append("'alerts' must be a mapping (see the comments at the top of the file).")
+        else:
+            for key, value in alerts.items():
+                if key not in settings_store.DEFAULT_ALERTS:
+                    errors.append(f"alerts: unknown key '{key}'.")
+                elif isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                    errors.append(f"alerts.{key} must be a number greater than 0.")
+                elif key.endswith("_percent") and value > 100:
+                    errors.append(f"alerts.{key} cannot exceed 100.")
+                else:
+                    alerts_cfg[key] = value
+    settings["alerts"] = alerts_cfg
 
     if errors:
         return [], {}, errors

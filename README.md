@@ -91,6 +91,30 @@ jobs:
 - Un camembert montre l'espace pris par chaque tâche, et un encadré
   l'espace restant du stockage en ligne.
 
+## Voyant de santé et alertes e-mail
+
+Chaque tâche a un voyant (`ok`, `warning`, `critical`, ou `disabled`) affiché
+dans la colonne Status et dans l'API. Il passe en `critical` si la dernière
+sauvegarde a échoué, si l'envoi OneDrive a échoué, si la source est
+déconnectée, si le disque de destination a moins de 5 % d'espace libre ou
+s'il n'y a eu aucune réussite depuis 36 h. Il passe en `warning` si l'upload
+n'est pas confirmé après le seuil, si la taille de l'archive a chuté ou si le
+disque a moins de 10 % d'espace libre. Les seuils se règlent dans le bloc
+`alerts:` de `jobs.yml` (voir `jobs.yml.example`).
+
+Quatre événements envoient un e-mail, une seule fois par incident :
+sauvegarde en échec, upload non confirmé, archive beaucoup plus petite que la
+précédente, disque presque plein. L'envoi se règle dans le `.env`
+(`SMTP_USER`, `SMTP_PASSWORD`, `ALERT_TO`, voir `.env.example`) ; avec Gmail il
+faut un mot de passe d'application. Le bouton « Send test email » de la page
+Jobs vérifie la configuration. Au premier passage, seuls les événements
+postérieurs à l'activation des alertes déclenchent un e-mail.
+
+## Courbes (Trends)
+
+La page Trends montre, pour chaque tâche, la taille des archives et la durée
+des sauvegardes sur les 30 dernières réussites.
+
 ## API de statut
 
 `GET /api/status` (sans login, réseau local seulement) renvoie en JSON, pour
