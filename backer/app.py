@@ -1,3 +1,4 @@
+import math
 import os
 import secrets
 import shutil
@@ -10,11 +11,13 @@ from extensions import db, login_manager, scheduler
 from models import User, BackupJob, BackupHistory, LoginHistory, IPBan
 from auth import auth_bp, admin_required, get_active_ban, _client_ip
 from utils import (
+    format_duration,
     host_to_container_path, list_job_archives, delete_archive, read_log_file,
     translate_cron, check_mount_status, PathError,
 )
 from scheduler_jobs import run_job_async, is_job_running, _apscheduler_job_id
 import jobs_config
+import settings_store
 from jobs_config import (
     JOBS_FILE, EXAMPLE_YAML, parse_jobs_yaml, read_jobs_file, write_jobs_file,
     apply_jobs, init_jobs,
@@ -23,7 +26,7 @@ from onedrive_monitor import (
     scan_log, scan_log_job, upload_info, upload_times, monitor_state,
 )
 
-APP_VERSION = "v4.4"
+APP_VERSION = "v4.5"
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "secret_key")
@@ -50,6 +53,62 @@ main_bp = Blueprint("main", __name__)
 @main_bp.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+def _average_duration(job_id, limit=10):
+    """Durée moyenne (secondes) des dernières sauvegardes réussies, ou None."""
+    rows = (
+        BackupHistory.query.filter_by(job_id=job_id, status="success")
+        .filter(BackupHistory.finished_at.isnot(None))
+        .order_by(BackupHistory.finished_at.desc()).limit(limit).all()
+    )
+    durations = [
+        (r.finished_at - r.started_at).total_seconds()
+        for r in rows if r.started_at and r.finished_at
+    ]
+    return round(sum(durations) / len(durations)) if durations else None
+
+
+_PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16"]
+
+
+def _build_pie(items):
+    """items : liste de (nom, taille). Retourne les parts d'un camembert SVG
+    (cercle de rayon 1 centré en 0,0)."""
+    items = [(name, size) for name, size in items if size and size > 0]
+    total = sum(size for _, size in items)
+    pie = []
+    angle = -math.pi / 2
+    for i, (name, size) in enumerate(items):
+        fraction = size / total
+        entry = {
+            "name": name, "size": size, "percent": round(fraction * 100, 1),
+            "color": _PIE_COLORS[i % len(_PIE_COLORS)], "path": None,
+        }
+        if len(items) > 1:
+            end = angle + fraction * 2 * math.pi
+            x1, y1 = math.cos(angle), math.sin(angle)
+            x2, y2 = math.cos(end), math.sin(end)
+            large = 1 if fraction > 0.5 else 0
+            entry["path"] = f"M 0 0 L {x1:.5f} {y1:.5f} A 1 1 0 {large} 1 {x2:.5f} {y2:.5f} Z"
+            angle = end
+        pie.append(entry)
+    return pie
+
+
+def _offsite_summary(used_bytes):
+    """Espace du stockage en ligne : total saisi dans jobs.yml, pris par les
+    archives de Backer, restant. None si le total n'est pas renseigné."""
+    gb = settings_store.settings.get("offsite_storage_gb")
+    if not gb:
+        return None
+    total = int(gb * 1024 ** 3)
+    return {
+        "total_bytes": total,
+        "used_bytes": used_bytes,
+        "remaining_bytes": total - used_bytes,
+        "percent_used": min(100, round(used_bytes / total * 100, 1)),
+    }
 
 
 def _iso_local(dt):
@@ -82,6 +141,7 @@ def api_status():
 
     jobs = _visible_jobs()
     data = {}
+    grand_total = 0
     for job in jobs:
         base = BackupHistory.query.filter_by(job_id=job.id)
         successes = (
@@ -113,6 +173,8 @@ def api_status():
         except (PathError, OSError):
             pass
 
+        grand_total += archives_total
+
         if last_ok is None:
             onedrive_status, uploaded_at = "no backup", None
         else:
@@ -133,6 +195,7 @@ def api_status():
             "last_success_age_seconds": _seconds_between(now, last_ok.finished_at) if last_ok else None,
             "next_run": _iso_local(ap_job.next_run_time) if ap_job else None,
             "last_duration_seconds": _seconds_between(last_ok.finished_at, last_ok.started_at) if last_ok else None,
+            "average_duration_seconds": _average_duration(job.id),
             "last_size_bytes": last_size,
             "previous_size_bytes": prev_size,
             "size_change_bytes": (last_size - prev_size) if last_size is not None and prev_size is not None else None,
@@ -166,8 +229,15 @@ def api_status():
         "remaining_free_bytes": free["bytes"] if free else None,
         "remaining_free_at": _iso_local(free["at"]) if free else None,
     }
+    offsite = _offsite_summary(grand_total)
+    data["offsite_storage"] = {
+        "total_bytes": offsite["total_bytes"] if offsite else None,
+        "used_by_backer_bytes": grand_total,
+        "remaining_bytes": offsite["remaining_bytes"] if offsite else None,
+    }
     data["backer"] = {
         "version": APP_VERSION,
+        "staging_dir": settings_store.settings.get("staging_dir"),
         "jobs_file": jobs_config.status["state"],  # ok / missing / invalid
         "jobs_total": len(jobs),
         "jobs_enabled": sum(1 for j in jobs if j.enabled),
@@ -215,7 +285,15 @@ def dashboard():
         if last_run and last_run.status == "success":
             onedrive_uploaded_at = upload_info(last_run.archive_name)
 
+        avg_seconds = _average_duration(job.id)
+        elapsed_seconds = None
+        if last_run and last_run.status == "running":
+            elapsed_seconds = max(0, int((datetime.now() - last_run.started_at).total_seconds()))
+
         jobs_view.append({
+            "avg_seconds": avg_seconds,
+            "avg_text": format_duration(avg_seconds) if avg_seconds else None,
+            "elapsed_seconds": elapsed_seconds,
             "job": job, "last_run": last_run, "total_size": total_size,
             "onedrive_uploaded_at": onedrive_uploaded_at,
             "archive_count": archive_count, "estimated_total": estimated_total,
@@ -232,6 +310,8 @@ def dashboard():
         "dashboard.html", jobs_view=jobs_view, grand_total=grand_total,
         any_running=any_running, last_failed_login=last_failed_login,
         jobs_status=jobs_config.status, jobs_file=JOBS_FILE,
+        pie=_build_pie([(i["job"].name, i["total_size"]) for i in jobs_view]),
+        offsite=_offsite_summary(grand_total),
     )
 
 
@@ -387,7 +467,7 @@ def admin_jobs():
 
     if request.method == "POST":
         text = request.form.get("yaml", "").replace("\r\n", "\n")
-        jobs, errors = parse_jobs_yaml(text)
+        jobs, new_settings, errors = parse_jobs_yaml(text)
         if errors:
             for message in errors:
                 flash(message, "error")
@@ -401,7 +481,7 @@ def admin_jobs():
             return render_template(
                 "admin_jobs.html", yaml_text=text, jobs_file=JOBS_FILE, file_exists=file_exists,
             ), 500
-        removed = apply_jobs(jobs, current_app_ref())
+        removed = apply_jobs(jobs, current_app_ref(), new_settings)
         message = f"Saved and applied: {len(jobs)} job(s)."
         if removed:
             message += f" Removed with their history: {', '.join(removed)}."

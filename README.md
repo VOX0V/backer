@@ -52,6 +52,16 @@ jobs:
   planification automatique (bouton « Run » uniquement).
 - `retention` : nombre d'archives à garder (absent ou `null` = illimité).
 - `enabled` : `true` (par défaut) ou `false`.
+- `staging_dir` (optionnel, en haut du fichier, hors de la liste) : dossier
+  temporaire où l'archive est construite avant d'être déplacée d'un coup dans
+  `dest`. Il doit être sur le même disque que les `dest` et en dehors de tout
+  dossier `source` ou `dest`. Ça évite qu'un client de synchronisation
+  (OneDrive...) voie des fichiers à moitié écrits. Sans cette ligne, l'archive
+  est écrite directement dans `dest`.
+- `offsite_storage_gb` (optionnel) : taille totale de ton stockage en ligne,
+  en Go (1 Go = 1024³ octets, comme le client OneDrive). Sert à afficher
+  l'espace restant sur le dashboard (seules les archives de Backer sont
+  comptées).
 - Sans fichier `jobs.yml`, Backer démarre sans aucune sauvegarde et affiche
   un message sur le dashboard.
 - Si le fichier est invalide au démarrage, la dernière configuration valide
@@ -63,7 +73,7 @@ jobs:
 ## Fonctionnement du dashboard
 
 - **Run** exécute la sauvegarde en arrière-plan (ne bloque pas la page) ;
-  le dashboard se rafraîchit automatiquement toutes les 5s tant qu'une tâche
+  le dashboard se rafraîchit automatiquement toutes les 10s tant qu'une tâche
   est en cours, pour voir l'état évoluer sans recharger manuellement.
 - **Cron**, **Keep** (rétention) et l'état activé/désactivé s'affichent
   mais se modifient uniquement dans `jobs.yml`.
@@ -76,6 +86,10 @@ jobs:
   (nom, date, taille, confirmation d'upload OneDrive), avec suppression
   manuelle possible par archive.
 - Taille totale affichée par tâche et globalement en haut du dashboard.
+- Durée moyenne des 10 dernières sauvegardes réussies, et pendant une
+  sauvegarde une barre de progression avec le temps restant estimé.
+- Un camembert montre l'espace pris par chaque tâche, et un encadré
+  l'espace restant du stockage en ligne.
 
 ## API de statut
 

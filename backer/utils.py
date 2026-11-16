@@ -5,6 +5,7 @@ et exécution effective d'une sauvegarde (zip natif + fichier log).
 import os
 import re
 import subprocess
+import time
 from datetime import datetime
 
 # clé -> chemin réel sur l'hôte / chemin monté dans le conteneur / écriture autorisée
@@ -115,7 +116,7 @@ def host_to_container_path(host_path, require_writable=False):
     raise PathError(f"'{host_path}' is not covered by any mounted volume (see docker-compose.yml)")
 
 
-def run_backup(source_container_path, dest_container_dir, job_name):
+def run_backup(source_container_path, dest_container_dir, job_name, staging_dir=None):
     """
     Zippe le contenu de source_container_path dans dest_container_dir, avec
     un nom horodaté, et écrit un fichier .log à côté de l'archive.
@@ -137,6 +138,29 @@ def run_backup(source_container_path, dest_container_dir, job_name):
 
     os.makedirs(dest_container_dir, exist_ok=True)
 
+    # Dossier temporaire optionnel : l'archive y est construite puis déplacée d'un
+    # coup dans le dossier de destination (même disque obligatoire), pour qu'un
+    # client de synchronisation ne voie jamais un fichier à moitié écrit.
+    work_dir = dest_container_dir
+    if staging_dir:
+        try:
+            os.makedirs(staging_dir, exist_ok=True)
+            if os.stat(staging_dir).st_dev != os.stat(dest_container_dir).st_dev:
+                return {
+                    "status": "failed",
+                    "message": "Staging folder and destination are on different disks: "
+                               "the archive cannot be moved in one step. "
+                               "Put staging_dir on the same disk as dest.",
+                    "archive_name": None, "log_name": None, "size_bytes": None,
+                }
+        except OSError as exc:
+            return {
+                "status": "failed", "message": f"Cannot use the staging folder: {exc}",
+                "archive_name": None, "log_name": None, "size_bytes": None,
+            }
+        _clean_staging(staging_dir)
+        work_dir = staging_dir
+
     safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", job_name).strip("_") or "backup"
     started_at = datetime.now()
     # Timestamp avec secondes -- réduit fortement le risque de collision.
@@ -157,22 +181,42 @@ def run_backup(source_container_path, dest_container_dir, job_name):
         log_path = os.path.join(dest_container_dir, log_name)
         suffix += 1
 
-    cmd = ["zip", "-rq", archive_path, "."]
+    work_path = os.path.join(work_dir, archive_name)
+
+    cmd = ["zip", "-rq", work_path, "."]
     try:
         result = subprocess.run(
             cmd, cwd=source_container_path,
             capture_output=True, text=True, timeout=6 * 3600,
         )
     except subprocess.TimeoutExpired:
+        if staging_dir:
+            _remove_quiet(work_path)
         return {
             "status": "failed", "message": "Timed out while creating the archive",
             "archive_name": None, "log_name": None, "size_bytes": None,
         }
     except FileNotFoundError:
+        if staging_dir:
+            _remove_quiet(work_path)
         return {
             "status": "failed", "message": "'zip' binary not found in the container",
             "archive_name": None, "log_name": None, "size_bytes": None,
         }
+
+    if staging_dir:
+        if os.path.exists(work_path) and os.path.getsize(work_path) > 0:
+            try:
+                os.replace(work_path, archive_path)  # même disque : déplacement instantané
+            except OSError as exc:
+                _remove_quiet(work_path)
+                return {
+                    "status": "failed",
+                    "message": f"Could not move the archive from the staging folder to the destination: {exc}",
+                    "archive_name": None, "log_name": None, "size_bytes": None,
+                }
+        else:
+            _remove_quiet(work_path)
 
     finished_at = datetime.now()
     archive_exists = os.path.exists(archive_path)
@@ -201,6 +245,42 @@ def run_backup(source_container_path, dest_container_dir, job_name):
         "log_name": log_name if archive_exists else None,
         "size_bytes": size_bytes,
     }
+
+
+def _remove_quiet(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _clean_staging(staging_dir, max_age_seconds=24 * 3600):
+    """Supprime les restes anciens (plantage, arrêt du conteneur) du dossier
+    temporaire : archives .zip et fichiers temporaires de zip (ziXXXXXX) de plus de 24 h."""
+    now = time.time()
+    try:
+        for entry in os.scandir(staging_dir):
+            if not entry.is_file():
+                continue
+            if entry.name.endswith(".zip") or re.fullmatch(r"zi[A-Za-z0-9]{6}", entry.name):
+                if now - entry.stat().st_mtime > max_age_seconds:
+                    _remove_quiet(entry.path)
+    except OSError:
+        pass
+
+
+def format_duration(seconds):
+    """Durée lisible : 45s, 3m 12s, 1h 02m."""
+    if seconds is None:
+        return "—"
+    seconds = int(round(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 def _write_log_file(log_path, job_name, started_at, finished_at, status, size_bytes,

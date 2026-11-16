@@ -1,5 +1,15 @@
-# Backer jobs. Edit this text and save: the file is checked, then applied
-# immediately (no restart).
+# Backer configuration. Edit this text and save: the file is checked, then
+# applied immediately (no restart).
+#
+# staging_dir         (optional) folder where archives are built before being
+#                     moved into each job's dest. Must be on the same disk as
+#                     the dest folders and outside every source/dest folder.
+#                     Keeps half-written files away from a sync client.
+# offsite_storage_gb  (optional) total size of your online storage, in GB
+#                     (1 GB = 1024^3 bytes, like the OneDrive client). Used to
+#                     show the remaining space.
+#
+# Jobs:
 #
 # name       unique name of the job (also used in archive file names)
 # source     host path to back up, under a read-only mounted volume
@@ -11,6 +21,9 @@
 #
 # A job removed from this file is deleted from Backer together with its
 # history. Archives already on disk are never touched.
+
+staging_dir: /mnt/hdd/backer_tmp
+offsite_storage_gb: 1029
 
 jobs:
   - name: DebServ

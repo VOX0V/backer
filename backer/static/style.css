@@ -203,3 +203,54 @@ button:hover { opacity: 0.9; }
     margin-top: 12px;
 }
 
+.progress { margin-top: 6px; min-width: 160px; }
+.progress-track {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.progress-bar {
+    height: 100%;
+    width: 0;
+    background: #3b82f6;
+    transition: width 1s linear;
+}
+.progress.indeterminate .progress-bar { opacity: 0.4; }
+
+.dash-panels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 20px 0;
+}
+.panel-card {
+    flex: 1 1 320px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+}
+.panel-card h2 { margin-top: 0; font-size: 1.05rem; }
+.pie-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.pie { width: 160px; height: 160px; flex: 0 0 auto; }
+.pie path, .pie circle { stroke: var(--panel); stroke-width: 0.02; }
+.pie-legend { list-style: none; margin: 0; padding: 0; }
+.pie-legend li { margin: 4px 0; }
+.swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.meter {
+    height: 12px;
+    background: var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+.meter-fill { height: 100%; background: #10b981; }
+

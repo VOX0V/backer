@@ -14,10 +14,12 @@ Règles :
   (les archives sur le disque ne sont jamais touchées).
 """
 import os
+import posixpath
 import re
 
 import yaml
 
+import settings_store
 from extensions import db
 from models import BackupJob
 from scheduler_jobs import parse_cron_or_none, register_job, unregister_job
@@ -27,12 +29,22 @@ DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 JOBS_FILE = os.environ.get("JOBS_FILE", os.path.join(DATA_DIR, "jobs.yml"))
 
 # Noms de clés déjà utilisés au premier niveau de /api/status.
-RESERVED_NAMES = {"backer", "onedrive_client"}
+RESERVED_NAMES = {"backer", "onedrive_client", "offsite_storage"}
 _ALLOWED_KEYS = {"name", "source", "dest", "cron", "retention", "enabled"}
 
 EXAMPLE_YAML = """\
-# Backer jobs. Edit this text and save: the file is checked, then applied
-# immediately (no restart).
+# Backer configuration. Edit this text and save: the file is checked, then
+# applied immediately (no restart).
+#
+# staging_dir         (optional) folder where archives are built before being
+#                     moved into each job's dest. Must be on the same disk as
+#                     the dest folders and outside every source/dest folder.
+#                     Keeps half-written files away from a sync client.
+# offsite_storage_gb  (optional) total size of your online storage, in GB
+#                     (1 GB = 1024^3 bytes, like the OneDrive client). Used to
+#                     show the remaining space.
+#
+# Jobs:
 #
 # name       unique name of the job (also used in archive file names)
 # source     host path to back up, under a read-only mounted volume
@@ -44,6 +56,9 @@ EXAMPLE_YAML = """\
 #
 # A job removed from this file is deleted from Backer together with its
 # history. Archives already on disk are never touched.
+
+staging_dir: /mnt/hdd/backer_tmp
+offsite_storage_gb: 1029
 
 jobs:
   - name: DebServ
@@ -78,21 +93,32 @@ def _safe_name(name):
     return re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or "backup"
 
 
+def _inside(path, parent):
+    """path est parent ou se trouve dedans (chemins hôte normalisés)."""
+    return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
+def _mount_root(container_path):
+    """Racine de montage d'un chemin conteneur (/mnt/sources/<clé>)."""
+    return "/".join(container_path.split("/")[:4])
+
+
 def parse_jobs_yaml(text):
-    """Vérifie le texte YAML. Retourne (jobs, errors) : jobs est la liste
-    normalisée, errors la liste de messages (vide si tout est valide)."""
+    """Vérifie le texte YAML. Retourne (jobs, settings, errors) : jobs est la
+    liste normalisée, settings les réglages globaux (staging_dir,
+    offsite_storage_gb), errors la liste de messages (vide si tout est valide)."""
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        return [], [f"Invalid YAML: {exc}"]
+        return [], {}, [f"Invalid YAML: {exc}"]
 
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
-        return [], ["The file must contain a 'jobs:' list."]
+        return [], {}, ["The file must contain a 'jobs:' list."]
     if not data["jobs"]:
-        return [], ["The 'jobs:' list is empty: define at least one job."]
+        return [], {}, ["The 'jobs:' list is empty: define at least one job."]
 
     errors = []
-    extra_top = set(data) - {"jobs"}
+    extra_top = set(data) - {"jobs", "staging_dir", "offsite_storage_gb"}
     if extra_top:
         errors.append("Unknown top-level key(s): " + ", ".join(sorted(map(str, extra_top))))
 
@@ -186,7 +212,59 @@ def parse_jobs_yaml(text):
             "retention": retention, "enabled": enabled,
         })
 
-    return (jobs if not errors else []), errors
+    settings = {"staging_dir": None, "offsite_storage_gb": None}
+
+    # --- staging_dir
+    staging = data.get("staging_dir")
+    if staging is not None:
+        if not isinstance(staging, str) or not staging.strip():
+            errors.append("'staging_dir' must be a folder path (text).")
+        else:
+            staging = posixpath.normpath(staging.strip())
+            try:
+                staging_c = host_to_container_path(staging, require_writable=True)
+            except PathError as exc:
+                errors.append(f"staging_dir: {exc}")
+            else:
+                settings["staging_dir"] = staging
+                for j in jobs:
+                    for key in ("source", "dest"):
+                        other = j.get(key)
+                        if not isinstance(other, str):
+                            continue
+                        other = posixpath.normpath(other)
+                        if _inside(staging, other) or _inside(other, staging):
+                            errors.append(
+                                f"staging_dir overlaps with the {key} of '{j['name']}' ({other})."
+                            )
+                    dest = j.get("dest")
+                    if not isinstance(dest, str):
+                        continue
+                    try:
+                        dest_c = host_to_container_path(dest, require_writable=True)
+                    except PathError:
+                        continue
+                    if _mount_root(staging_c) != _mount_root(dest_c):
+                        errors.append(
+                            f"staging_dir must be on the same disk as the dest of '{j['name']}'."
+                        )
+                    elif os.path.exists(staging_c) and os.path.exists(dest_c) \
+                            and os.stat(staging_c).st_dev != os.stat(dest_c).st_dev:
+                        errors.append(
+                            f"staging_dir is on a different disk than the dest of '{j['name']}'."
+                        )
+
+    # --- offsite_storage_gb
+    offsite = data.get("offsite_storage_gb")
+    if offsite is not None:
+        if isinstance(offsite, bool) or not isinstance(offsite, (int, float)) or offsite <= 0:
+            errors.append("'offsite_storage_gb' must be a number greater than 0 (size in GB).")
+        else:
+            settings["offsite_storage_gb"] = float(offsite)
+
+    if errors:
+        return [], {}, errors
+    return jobs, settings, []
 
 
 def read_jobs_file():
@@ -203,7 +281,7 @@ def write_jobs_file(text):
     os.replace(tmp, JOBS_FILE)
 
 
-def apply_jobs(jobs, app):
+def apply_jobs(jobs, app, settings=None):
     """Applique la liste (déjà vérifiée) : crée/met à jour les tâches, supprime
     celles qui ne sont plus dans le fichier (historique compris) et
     réenregistre la planification. À appeler dans un contexte d'application.
@@ -233,6 +311,9 @@ def apply_jobs(jobs, app):
     for row in BackupJob.query.all():
         register_job(row, app)  # retire la planification si désactivée
 
+    if settings is not None:
+        settings_store.settings.update(settings)
+
     status.update(state="ok", errors=[])
     return removed
 
@@ -256,10 +337,10 @@ def init_jobs(app):
         _register_existing(app)
         return
 
-    jobs, errors = parse_jobs_yaml(text)
+    jobs, settings, errors = parse_jobs_yaml(text)
     if errors:
         status.update(state="invalid", errors=errors)
         _register_existing(app)
         return
 
-    apply_jobs(jobs, app)
+    apply_jobs(jobs, app, settings)

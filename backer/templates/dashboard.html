@@ -3,7 +3,7 @@
 {% block content %}
 
 {% if any_running %}
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="10">
 {% endif %}
 
 <div class="dash-header">
@@ -101,6 +101,15 @@
                     {% if item.last_run.size_bytes %}
                         <div class="muted small">{{ item.last_run.size_bytes|filesizeformat }}</div>
                     {% endif %}
+                    {% if item.avg_text %}
+                        <div class="muted small">average duration {{ item.avg_text }}</div>
+                    {% endif %}
+                    {% if item.last_run.status == "running" %}
+                        <div class="progress" data-elapsed="{{ item.elapsed_seconds or 0 }}" data-avg="{{ item.avg_seconds or 0 }}">
+                            <div class="progress-track"><div class="progress-bar"></div></div>
+                            <div class="progress-text muted small"></div>
+                        </div>
+                    {% endif %}
                     {% if item.last_run.status == "failed" %}
                         <div class="muted small">{{ item.last_run.message }}</div>
                     {% elif item.last_run.log_name %}
@@ -147,11 +156,93 @@
 </table>
 </div>
 
+<div class="dash-panels">
+    <section class="panel-card">
+        <h2>Space used by job</h2>
+        {% if pie %}
+        <div class="pie-wrap">
+            <svg viewBox="-1.05 -1.05 2.1 2.1" class="pie" role="img" aria-label="Space used by each job">
+                {% for slice in pie %}
+                    {% if slice.path %}
+                        <path d="{{ slice.path }}" fill="{{ slice.color }}"></path>
+                    {% else %}
+                        <circle r="1" fill="{{ slice.color }}"></circle>
+                    {% endif %}
+                {% endfor %}
+            </svg>
+            <ul class="pie-legend">
+                {% for slice in pie %}
+                <li>
+                    <span class="swatch" style="background: {{ slice.color }}"></span>
+                    {{ slice.name }} — {{ slice.size|filesizeformat }} ({{ slice.percent }}%)
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+            <p class="muted">No archives yet.</p>
+        {% endif %}
+    </section>
+
+    <section class="panel-card">
+        <h2>Offsite storage</h2>
+        {% if offsite %}
+            <div class="meter"><div class="meter-fill" style="width: {{ offsite.percent_used }}%"></div></div>
+            <p>
+                Total <strong>{{ offsite.total_bytes|filesizeformat(true) }}</strong><br>
+                Used by Backer archives <strong>{{ offsite.used_bytes|filesizeformat(true) }}</strong> ({{ offsite.percent_used }}%)<br>
+                Remaining <strong>{{ offsite.remaining_bytes|filesizeformat(true) }}</strong>
+            </p>
+            <p class="muted small">
+                Only Backer's own archives are counted, not the rest of your online account.
+                The total comes from <code>offsite_storage_gb</code> in jobs.yml.
+            </p>
+        {% else %}
+            <p class="muted">Set <code>offsite_storage_gb</code> in jobs.yml (size of your online storage, in GB) to see the remaining space.</p>
+        {% endif %}
+    </section>
+</div>
+
 <p class="muted small">
     Cron: standard 5-field format (minute hour day month weekday), e.g. <code>0 3 * * *</code> = every day at 3:00;
     <code>manual</code> = no automatic schedule ("Run" button only).
     Keep: number of archives kept per job, empty = unlimited.
     Estimated: projected total size once the retention count is reached (based on the current average size).
 </p>
+
+{% if any_running %}
+<script>
+(function () {
+    var bars = document.querySelectorAll(".progress");
+    if (!bars.length) { return; }
+    var loadedAt = Date.now();
+    function fmt(seconds) {
+        seconds = Math.max(0, Math.round(seconds));
+        var m = Math.floor(seconds / 60), s = seconds % 60;
+        return m ? m + "m " + (s < 10 ? "0" : "") + s + "s" : s + "s";
+    }
+    function tick() {
+        bars.forEach(function (el) {
+            var elapsed = parseFloat(el.dataset.elapsed) + (Date.now() - loadedAt) / 1000;
+            var avg = parseFloat(el.dataset.avg);
+            var bar = el.querySelector(".progress-bar");
+            var text = el.querySelector(".progress-text");
+            if (!avg) {
+                bar.style.width = "100%";
+                el.classList.add("indeterminate");
+                text.textContent = "running for " + fmt(elapsed) + " (no average yet)";
+                return;
+            }
+            bar.style.width = Math.min(100, elapsed / avg * 100) + "%";
+            text.textContent = elapsed <= avg
+                ? "about " + fmt(avg - elapsed) + " left (estimate)"
+                : "longer than usual (" + fmt(elapsed) + ")";
+        });
+    }
+    tick();
+    setInterval(tick, 1000);
+})();
+</script>
+{% endif %}
 
 {% endblock %}

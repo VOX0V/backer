@@ -6,6 +6,7 @@ import threading
 from datetime import datetime
 from apscheduler.triggers.cron import CronTrigger
 
+import settings_store
 from extensions import db, scheduler
 from models import BackupJob, BackupHistory
 from utils import host_to_container_path, run_backup, enforce_retention, append_to_log_file, PathError
@@ -47,6 +48,10 @@ def execute_backup_job(job_id, app):
         try:
             source_path = host_to_container_path(job.source_path)
             dest_dir = host_to_container_path(job.dest_path, require_writable=True)
+            staging_host = settings_store.settings.get("staging_dir")
+            staging_dir = (
+                host_to_container_path(staging_host, require_writable=True) if staging_host else None
+            )
         except PathError as exc:
             history.status = "failed"
             history.message = f"Invalid path: {exc}"
@@ -54,7 +59,7 @@ def execute_backup_job(job_id, app):
             db.session.commit()
             return
 
-        result = run_backup(source_path, dest_dir, job.name)
+        result = run_backup(source_path, dest_dir, job.name, staging_dir)
 
         history.status = result["status"]
         history.message = result["message"]
