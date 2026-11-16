@@ -185,3 +185,21 @@ button:hover { opacity: 0.9; }
 }
 .flash-success { background: rgba(47,182,115,0.15); color: var(--success); }
 .flash-error { background: rgba(229,72,77,0.15); color: var(--failed); }
+
+.yaml-editor {
+    width: 100%;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    tab-size: 2;
+}
+
+.editor-actions {
+    margin-top: 12px;
+}
+

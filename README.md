@@ -9,62 +9,81 @@ serveur Linux, à la place de scripts shell manuels.
 git clone https://github.com/<pseudo>/backer.git
 cd backer
 cp .env.example .env
-nano .env   # remplir ADMIN_USERNAME/PASSWORD et tes BACKN_*
+nano .env   # remplir ADMIN_USERNAME / ADMIN_PASSWORD
+cp jobs.yml.example data/jobs.yml
+nano data/jobs.yml   # décrire tes sauvegardes
 docker compose up -d
 ```
 
 Le premier démarrage crée le compte admin défini dans `.env` (si aucun
-utilisateur n'existe déjà) et synchronise les jobs de sauvegarde décrits par
-les blocs `BACKN_*`.
+utilisateur n'existe déjà) et applique les sauvegardes décrites dans
+`jobs.yml`.
 
 ## Comment ça marche
 
-Les jobs sont définis dans le `.env` (nom / source / destination), **pas**
-via l'interface web. La planification (cron) se change ensuite depuis le
-dashboard et est conservée en base — elle survit aux redémarrages du
-conteneur.
+Les sauvegardes sont définies dans le fichier `jobs.yml` du dossier de
+données (`/app/data/jobs.yml` dans le conteneur). Ce fichier se modifie
+depuis l'éditeur web (menu **Jobs**, réservé aux admins) ou directement
+dans le fichier. Chaque enregistrement dans l'éditeur est vérifié puis
+appliqué immédiatement, sans redémarrage.
 
-## Format des jobs dans le .env
+## Format de jobs.yml
 
+```yaml
+jobs:
+  - name: DebServ
+    source: /home/srv
+    dest: /mnt/hdd/onedrive/backups/debserv
+    cron: "0 3 * * *"
+    retention: 30
+    enabled: true
 ```
-BACK1_NAME=DebServ
-BACK1_SOURCE=/home/srv
-BACK1_DEST=/mnt/hdd/onedrive/backups/debserv
-BACK1_CRON=0 3 * * *
-```
 
-- `SOURCE` doit être sous un des volumes montés en lecture seule (voir
+- `name` : nom unique de la tâche (utilisé aussi dans les noms d'archives).
+- `source` doit être sous un des volumes montés en lecture seule (voir
   `docker-compose.yml` — par défaut `/home/srv`, `/mnt/netsec`,
   `/mnt/piserv`, à adapter à ton infra).
-- `DEST` doit être sous `/mnt/hdd` (seule racine montée en écriture par
+- `dest` doit être sous `/mnt/hdd` (seule racine montée en écriture par
   défaut dans `docker-compose.yml`) — adapte ce chemin et le volume associé
   si un service de synchronisation cloud (OneDrive, rclone, ...) surveille
   déjà un dossier particulier chez toi.
-- `CRON` est optionnel, au format standard 5 champs (`minute heure jour mois
-  jour_semaine`) — génère-le sur crontab.guru si besoin. Il ne sert qu'à
-  l'**initialisation** de la tâche : une fois créée, modifier `BACK1_CRON`
-  dans le `.env` n'a plus d'effet, la planification se change depuis le
-  dashboard. Utilise `manual` pour une tâche sans planification automatique
-  (bouton « Lancer » uniquement).
-- Si un bloc `BACKN_*` est retiré du `.env`, la tâche correspondante est
-  **désactivée** au redémarrage suivant (pas supprimée) — son historique
-  reste consultable.
+- `cron` : format standard 5 champs (`minute heure jour mois jour_semaine`)
+  — génère-le sur crontab.guru si besoin. `manual` (ou absent) = pas de
+  planification automatique (bouton « Run » uniquement).
+- `retention` : nombre d'archives à garder (absent ou `null` = illimité).
+- `enabled` : `true` (par défaut) ou `false`.
+- Sans fichier `jobs.yml`, Backer démarre sans aucune sauvegarde et affiche
+  un message sur le dashboard.
+- Si le fichier est invalide au démarrage, la dernière configuration valide
+  continue de tourner et les erreurs sont affichées.
+- Une tâche retirée du fichier est **supprimée** de Backer avec son
+  historique ; les archives déjà présentes sur le disque ne sont jamais
+  touchées.
 
 ## Fonctionnement du dashboard
 
-- **Lancer** exécute la sauvegarde en arrière-plan (ne bloque pas la page) ;
+- **Run** exécute la sauvegarde en arrière-plan (ne bloque pas la page) ;
   le dashboard se rafraîchit automatiquement toutes les 5s tant qu'une tâche
   est en cours, pour voir l'état évoluer sans recharger manuellement.
-- **Cron** et **Conserver** (rétention) sont éditables directement sur
-  chaque ligne, en base — persistent aux redémarrages.
+- **Cron**, **Keep** (rétention) et l'état activé/désactivé s'affichent
+  mais se modifient uniquement dans `jobs.yml`.
 - **Rétention** : nombre d'archives à garder par tâche. Une fois la limite
   atteinte, les plus vieilles sont supprimées automatiquement après chaque
-  sauvegarde réussie (archive + son `.log`). Champ vide = illimité.
+  sauvegarde réussie (archive + son `.log`). Absente = illimitée.
 - Le nom du dernier log est cliquable → page en texte brut avec le détail
   de l'exécution (durée, taille, avertissements zip éventuels).
-- **Historique** (bouton par tâche) : liste toutes les archives conservées
-  (nom, date, taille), avec suppression manuelle possible par archive.
+- **History** (bouton par tâche) : liste toutes les archives conservées
+  (nom, date, taille, confirmation d'upload OneDrive), avec suppression
+  manuelle possible par archive.
 - Taille totale affichée par tâche et globalement en haut du dashboard.
+
+## API de statut
+
+`GET /api/status` (sans login, réseau local seulement) renvoie en JSON, pour
+chaque tâche, l'état de la source, la dernière sauvegarde et la prochaine,
+la durée, les tailles, le nombre d'échecs récents, l'espace disque de la
+destination et la confirmation d'upload OneDrive, plus un bloc
+`onedrive_client` (lu dans le log du client OneDrive) et un bloc `backer`.
 
 ## Sécurité
 
@@ -94,7 +113,7 @@ BACK1_CRON=0 3 * * *
 - `X-Frame-Options: DENY` + `Content-Security-Policy: frame-ancestors 'none'`
   + `Cache-Control: no-store` sur `/login` et `/admin` uniquement (pas
   globalement).
-- Scheduler persistant : les crons sont relus depuis la base de données et
+- Scheduler persistant : les crons sont relus depuis `jobs.yml` et
   réenregistrés dans APScheduler à chaque démarrage du conteneur.
 - Healthcheck intégré (`/health`).
 - Gestion réaliste des erreurs zip : un fichier illisible (socket,

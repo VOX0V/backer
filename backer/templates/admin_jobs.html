@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Jobs editor — Backer{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('main.dashboard') }}">&larr; Back to dashboard</a></p>
+
+<h1>Jobs editor</h1>
+
+<p class="muted">
+    File: <code>{{ jobs_file }}</code>
+    {% if not file_exists %}
+        — <strong>this file does not exist yet</strong>: the text below is an example, saving creates the file.
+    {% endif %}
+</p>
+<p class="muted small">
+    "Check and save" verifies the text, writes the file, then applies it immediately (no restart).
+    A job removed from the file is deleted from Backer together with its history;
+    archives already on disk are never touched.
+</p>
+
+<form method="POST" action="{{ url_for('main.admin_jobs') }}">
+    <textarea name="yaml" class="yaml-editor" rows="30" spellcheck="false" autocomplete="off">{{ yaml_text }}</textarea>
+    <div class="editor-actions">
+        <button type="submit">Check and save</button>
+    </div>
+</form>
+
+{% endblock %}

@@ -1,0 +1,35 @@
+# Backer jobs. Edit this text and save: the file is checked, then applied
+# immediately (no restart).
+#
+# name       unique name of the job (also used in archive file names)
+# source     host path to back up, under a read-only mounted volume
+# dest       host path where archives are written, under the writable volume
+# cron       5 fields (minute hour day month weekday), or "manual" for no
+#            automatic schedule (default if omitted: manual)
+# retention  number of archives to keep (omit or null = unlimited)
+# enabled    true or false (default if omitted: true)
+#
+# A job removed from this file is deleted from Backer together with its
+# history. Archives already on disk are never touched.
+
+jobs:
+  - name: DebServ
+    source: /home/srv
+    dest: /mnt/hdd/onedrive/backups/debserv
+    cron: "0 3 * * *"
+    retention: 30
+    enabled: true
+
+  - name: NetSec
+    source: /mnt/netsec
+    dest: /mnt/hdd/onedrive/backups/netsec
+    cron: "0 4 * * *"
+    retention: 30
+    enabled: true
+
+  - name: PiServ
+    source: /mnt/piserv
+    dest: /mnt/hdd/onedrive/backups/piserv
+    cron: "0 5 * * *"
+    retention: 30
+    enabled: true

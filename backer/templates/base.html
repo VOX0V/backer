@@ -15,6 +15,7 @@
             <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
             {% if current_user.is_admin %}
                 <a href="{{ url_for('main.admin_home') }}">Admin</a>
+                <a href="{{ url_for('main.admin_jobs') }}">Jobs</a>
             {% endif %}
             <a href="{{ url_for('auth.logout') }}">Log out ({{ current_user.username }})</a>
         </div>

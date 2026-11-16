@@ -1,6 +1,6 @@
 import os
-import re
 import secrets
+import shutil
 from datetime import datetime, timedelta
 
 from flask import Flask, Blueprint, render_template, request, redirect, url_for, flash, abort, jsonify
@@ -13,13 +13,17 @@ from utils import (
     host_to_container_path, list_job_archives, delete_archive, read_log_file,
     translate_cron, check_mount_status, PathError,
 )
-from scheduler_jobs import (
-    register_job, unregister_job, load_all_jobs_on_startup,
-    run_job_async, parse_cron_or_none, _apscheduler_job_id,
+from scheduler_jobs import run_job_async, is_job_running, _apscheduler_job_id
+import jobs_config
+from jobs_config import (
+    JOBS_FILE, EXAMPLE_YAML, parse_jobs_yaml, read_jobs_file, write_jobs_file,
+    apply_jobs, init_jobs,
 )
 from onedrive_monitor import (
     scan_log, scan_log_job, upload_info, upload_times, monitor_state,
 )
+
+APP_VERSION = "v4.4"
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "secret_key")
@@ -53,20 +57,61 @@ def _iso_local(dt):
     return dt.astimezone().isoformat() if dt else None
 
 
+def _seconds_between(later, earlier):
+    return round((later - earlier).total_seconds()) if later and earlier else None
+
+
+def _visible_jobs():
+    """Aucune tâche affichée ni planifiée tant que jobs.yml n'existe pas."""
+    if jobs_config.status["state"] == "missing":
+        return []
+    return BackupJob.query.order_by(BackupJob.name.asc()).all()
+
+
+# Fenêtre (en jours) pour compter les échecs récents dans /api/status.
+FAILURE_WINDOW_DAYS = 7
+
+
 @main_bp.route("/api/status")
 def api_status():
     """Statut des sauvegardes en JSON, pour tout outil externe (ex. un widget
     Homepage). Sans login -- réseau local seulement. Une clé par tâche (nom de
-    la tâche) + une clé « onedrive_client »."""
+    la tâche), plus « onedrive_client » (log du client OneDrive) et « backer »."""
     scan_log()
+    now = datetime.now()
 
+    jobs = _visible_jobs()
     data = {}
-    for job in BackupJob.query.order_by(BackupJob.name.asc()).all():
-        last_ok = (
-            BackupHistory.query.filter_by(job_id=job.id, status="success")
-            .order_by(BackupHistory.finished_at.desc()).first()
+    for job in jobs:
+        base = BackupHistory.query.filter_by(job_id=job.id)
+        successes = (
+            base.filter_by(status="success")
+            .order_by(BackupHistory.finished_at.desc()).limit(2).all()
         )
+        last_ok = successes[0] if successes else None
+        prev_ok = successes[1] if len(successes) > 1 else None
+        last_fail = base.filter_by(status="failed").order_by(BackupHistory.started_at.desc()).first()
+        recent_failures = base.filter(
+            BackupHistory.status == "failed",
+            BackupHistory.started_at >= now - timedelta(days=FAILURE_WINDOW_DAYS),
+        ).count()
+
         ap_job = scheduler.get_job(_apscheduler_job_id(job.id))
+
+        try:
+            source_status = check_mount_status(host_to_container_path(job.source_path))
+        except PathError:
+            source_status = "error"
+
+        archive_count, archives_total, du = 0, 0, None
+        try:
+            dest_dir = host_to_container_path(job.dest_path)
+            archives, archives_total = list_job_archives(dest_dir, job.name)
+            archive_count = len(archives)
+            if os.path.isdir(dest_dir):
+                du = shutil.disk_usage(dest_dir)
+        except (PathError, OSError):
+            pass
 
         if last_ok is None:
             onedrive_status, uploaded_at = "no backup", None
@@ -74,26 +119,66 @@ def api_status():
             uploaded_at = upload_info(last_ok.archive_name)
             onedrive_status = "uploaded" if uploaded_at else "pending"
 
+        last_size = last_ok.size_bytes if last_ok else None
+        prev_size = prev_ok.size_bytes if prev_ok else None
+
         data[job.name] = {
+            "enabled": job.enabled,
+            "running": is_job_running(job.id),
+            "source_status": source_status,  # ok / empty / error
+            "cron": job.cron_expression,
+            "cron_readable": translate_cron(job.cron_expression),
+            "retention": job.retention_count,
             "last_success": _iso_local(last_ok.finished_at) if last_ok else None,
+            "last_success_age_seconds": _seconds_between(now, last_ok.finished_at) if last_ok else None,
             "next_run": _iso_local(ap_job.next_run_time) if ap_job else None,
+            "last_duration_seconds": _seconds_between(last_ok.finished_at, last_ok.started_at) if last_ok else None,
+            "last_size_bytes": last_size,
+            "previous_size_bytes": prev_size,
+            "size_change_bytes": (last_size - prev_size) if last_size is not None and prev_size is not None else None,
+            "archive_count": archive_count,
+            "archives_total_bytes": archives_total,
+            "failures_last_7_days": recent_failures,
+            "last_failure_at": _iso_local(last_fail.started_at) if last_fail else None,
+            "last_failure_message": last_fail.message if last_fail else None,
+            "dest_free_bytes": du.free if du else None,
+            "dest_total_bytes": du.total if du else None,
+            "dest_used_bytes": du.used if du else None,
             "onedrive": onedrive_status,
             "onedrive_uploaded_at": _iso_local(uploaded_at),
+            "onedrive_delay_seconds": _seconds_between(uploaded_at, last_ok.finished_at) if last_ok and uploaded_at else None,
         }
 
     state = monitor_state()
+    items = state["last_items"]
+    deletion = state["last_deletion"]
+    free = state["free_space"]
     data["onedrive_client"] = {
         "log": "ok" if state["readable"] else "unreadable",
         "last_sync": _iso_local(state["last_sync"]),
+        "last_service_contact": _iso_local(state["last_reach"]),
+        "last_items_processed": items["count"] if items else None,
+        "last_items_processed_at": _iso_local(items["at"]) if items else None,
+        "last_deleted_path": deletion["path"] if deletion else None,
+        "last_deleted_at": _iso_local(deletion["at"]) if deletion else None,
+        "clock_skew_seconds": state["clock_skew_seconds"],
+        # Espace restant affiché par le client à son démarrage (mode verbeux seulement).
+        "remaining_free_bytes": free["bytes"] if free else None,
+        "remaining_free_at": _iso_local(free["at"]) if free else None,
+    }
+    data["backer"] = {
+        "version": APP_VERSION,
+        "jobs_file": jobs_config.status["state"],  # ok / missing / invalid
+        "jobs_total": len(jobs),
+        "jobs_enabled": sum(1 for j in jobs if j.enabled),
     }
     return jsonify(data)
-
 
 
 @main_bp.route("/")
 @login_required
 def dashboard():
-    jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
+    jobs = _visible_jobs()
     jobs_view = []
     grand_total = 0
     any_running = False
@@ -146,6 +231,7 @@ def dashboard():
     return render_template(
         "dashboard.html", jobs_view=jobs_view, grand_total=grand_total,
         any_running=any_running, last_failed_login=last_failed_login,
+        jobs_status=jobs_config.status, jobs_file=JOBS_FILE,
     )
 
 
@@ -157,58 +243,6 @@ def security_alert_dismiss():
     if entry:
         entry.dismissed = True
         db.session.commit()
-    return redirect(url_for("main.dashboard"))
-
-
-@main_bp.route("/job/<int:job_id>/schedule", methods=["POST"])
-@login_required
-def job_schedule(job_id):
-    job = db.session.get(BackupJob, job_id) or abort(404)
-    new_cron = request.form.get("cron_expression", "manual").strip() or "manual"
-
-    try:
-        parse_cron_or_none(new_cron)  # valide le format avant d'enregistrer
-    except ValueError as exc:
-        flash(f"Invalid cron expression for '{job.name}': {exc}", "error")
-        return redirect(url_for("main.dashboard"))
-
-    job.cron_expression = new_cron
-    db.session.commit()
-    register_job(job, current_app_ref()) if job.enabled else unregister_job(job.id)
-    flash(f"Schedule for '{job.name}' updated.", "success")
-    return redirect(url_for("main.dashboard"))
-
-
-@main_bp.route("/job/<int:job_id>/toggle", methods=["POST"])
-@login_required
-def job_toggle(job_id):
-    job = db.session.get(BackupJob, job_id) or abort(404)
-    job.enabled = not job.enabled
-    db.session.commit()
-    register_job(job, current_app_ref()) if job.enabled else unregister_job(job.id)
-    return redirect(url_for("main.dashboard"))
-
-
-@main_bp.route("/job/<int:job_id>/retention", methods=["POST"])
-@login_required
-def job_retention(job_id):
-    job = db.session.get(BackupJob, job_id) or abort(404)
-    raw = request.form.get("retention_count", "").strip()
-
-    if raw == "":
-        job.retention_count = None
-    else:
-        try:
-            value = int(raw)
-            if value < 1:
-                raise ValueError
-        except ValueError:
-            flash("Retention must be a positive whole number, or empty for unlimited.", "error")
-            return redirect(url_for("main.dashboard"))
-        job.retention_count = value
-
-    db.session.commit()
-    flash(f"Retention for '{job.name}' updated.", "success")
     return redirect(url_for("main.dashboard"))
 
 
@@ -343,64 +377,46 @@ def admin_ban_clear(ban_id):
 
 
 # ---------------------------------------------------------------------------
-# Synchronisation des jobs depuis le .env (BACK1_NAME/SOURCE/DEST/CRON, ...)
+# Éditeur du fichier de configuration des sauvegardes (jobs.yml)
 # ---------------------------------------------------------------------------
 
-_ENV_JOB_RE = re.compile(r"^BACK(\d+)_NAME$")
-DEFAULT_CRON = "0 3 * * *"  # tous les jours à 3h, utilisé seulement à la création
-FORCED_RETENTION_ON_STARTUP = 30  # appliqué à TOUTES les tâches à chaque démarrage du conteneur
+@main_bp.route("/admin/jobs", methods=["GET", "POST"])
+@admin_required
+def admin_jobs():
+    file_exists = os.path.exists(JOBS_FILE)
 
+    if request.method == "POST":
+        text = request.form.get("yaml", "").replace("\r\n", "\n")
+        jobs, errors = parse_jobs_yaml(text)
+        if errors:
+            for message in errors:
+                flash(message, "error")
+            return render_template(
+                "admin_jobs.html", yaml_text=text, jobs_file=JOBS_FILE, file_exists=file_exists,
+            ), 400
+        try:
+            write_jobs_file(text)
+        except OSError as exc:
+            flash(f"Cannot write {JOBS_FILE}: {exc}", "error")
+            return render_template(
+                "admin_jobs.html", yaml_text=text, jobs_file=JOBS_FILE, file_exists=file_exists,
+            ), 500
+        removed = apply_jobs(jobs, current_app_ref())
+        message = f"Saved and applied: {len(jobs)} job(s)."
+        if removed:
+            message += f" Removed with their history: {', '.join(removed)}."
+        flash(message, "success")
+        return redirect(url_for("main.admin_jobs"))
 
-def _parse_env_jobs():
-    indices = sorted({m.group(1) for k in os.environ if (m := _ENV_JOB_RE.match(k))}, key=int)
-    jobs = []
-    for i in indices:
-        name = os.environ.get(f"BACK{i}_NAME", "").strip()
-        source = os.environ.get(f"BACK{i}_SOURCE", "").strip()
-        dest = os.environ.get(f"BACK{i}_DEST", "").strip()
-        cron = os.environ.get(f"BACK{i}_CRON", "").strip()
-        if not name or not source or not dest:
-            print(f"[Backer] BACK{i}_* incomplete in .env (name/source/dest required) -- ignored")
-            continue
-        jobs.append({"name": name, "source": source, "dest": dest, "cron": cron or None})
-    return jobs
-
-
-def _sync_jobs_from_env():
-    """Crée/actualise les jobs définis dans le .env. Ne touche jamais à la
-    planification (cron_expression) ou à l'état (enabled) d'un job déjà
-    existant -- ça reste géré depuis le dashboard. Un job env_managed dont
-    l'entrée .env disparaît est désactivé (pas supprimé -- historique gardé).
-
-    La rétention est forcée à FORCED_RETENTION_ON_STARTUP pour TOUTES les
-    tâches à chaque démarrage du conteneur (demande explicite : éviter
-    qu'une tâche oubliée en illimité sature le disque -- la valeur reste
-    ensuite ajustable depuis le dashboard jusqu'au prochain redémarrage)."""
-    env_jobs = _parse_env_jobs()
-    seen_names = set()
-
-    for ej in env_jobs:
-        seen_names.add(ej["name"])
-        existing = BackupJob.query.filter_by(name=ej["name"]).first()
-        if existing:
-            existing.source_path = ej["source"]
-            existing.dest_path = ej["dest"]
-            existing.env_managed = True
-            existing.retention_count = FORCED_RETENTION_ON_STARTUP
-        else:
-            db.session.add(BackupJob(
-                name=ej["name"], source_path=ej["source"], dest_path=ej["dest"],
-                cron_expression=ej["cron"] or DEFAULT_CRON,
-                retention_count=FORCED_RETENTION_ON_STARTUP,
-                enabled=True, env_managed=True,
-            ))
-    db.session.commit()
-
-    orphans = BackupJob.query.filter_by(env_managed=True).all()
-    for job in orphans:
-        if job.name not in seen_names:
-            job.enabled = False
-    db.session.commit()
+    yaml_text = EXAMPLE_YAML
+    if file_exists:
+        try:
+            yaml_text = read_jobs_file()
+        except OSError as exc:
+            flash(f"Cannot read {JOBS_FILE}: {exc}", "error")
+    return render_template(
+        "admin_jobs.html", yaml_text=yaml_text, jobs_file=JOBS_FILE, file_exists=file_exists,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +471,7 @@ def create_app():
 
     @app.context_processor
     def inject_app_version():
-        return {"app_version": "v4.3"}
+        return {"app_version": APP_VERSION}
 
     @app.before_request
     def block_banned_ips():
@@ -480,7 +496,6 @@ def create_app():
     with app.app_context():
         db.create_all()
         _bootstrap_admin_if_needed()
-        _sync_jobs_from_env()
         # Le fichier SQLite contient des hachages de mots de passe -- mêmes
         # permissions restrictives que secret_key, pas seulement l'umask
         # par défaut.
@@ -492,7 +507,8 @@ def create_app():
     if not scheduler.running:
         scheduler.init_app(app)
         scheduler.start()
-    load_all_jobs_on_startup(app)
+    with app.app_context():
+        init_jobs(app)
 
     # Lecture périodique du log OneDrive (confirmation des uploads).
     scheduler.add_job(

@@ -8,8 +8,32 @@
 
 <div class="dash-header">
     <h1>Backup jobs</h1>
-    <div class="grand-total">Total kept: <strong>{{ grand_total|filesizeformat }}</strong></div>
+    <div class="grand-total">
+        Total kept: <strong>{{ grand_total|filesizeformat }}</strong>
+        {% if current_user.is_admin %}
+            — <a href="{{ url_for('main.admin_jobs') }}">Edit jobs</a>
+        {% endif %}
+    </div>
 </div>
+
+{% if jobs_status.state == "missing" %}
+<div class="flash flash-error">
+    Jobs file not found (<code>{{ jobs_file }}</code>): no backups are scheduled.
+    {% if current_user.is_admin %}
+        <a href="{{ url_for('main.admin_jobs') }}">Create it with the jobs editor.</a>
+    {% else %}
+        Ask an admin to create it.
+    {% endif %}
+</div>
+{% elif jobs_status.state == "invalid" %}
+<div class="flash flash-error">
+    The jobs file (<code>{{ jobs_file }}</code>) is invalid: the last valid configuration keeps running.
+    <ul>
+        {% for message in jobs_status.errors %}<li>{{ message }}</li>{% endfor %}
+    </ul>
+    {% if current_user.is_admin %}<a href="{{ url_for('main.admin_jobs') }}">Open the jobs editor.</a>{% endif %}
+</div>
+{% endif %}
 
 {% if last_failed_login %}
 <div class="flash flash-error security-note">
@@ -25,8 +49,8 @@
 {% endif %}
 
 <p class="muted">
-    Jobs are defined in the <code>.env</code> file (name / source / destination).
-    The schedule (cron) and retention can be changed below and are kept across restarts.
+    Jobs are defined in <code>jobs.yml</code> (name / source / destination / cron / retention / enabled).
+    Change them in the jobs editor (admins) or directly in the file.
 </p>
 
 <div class="table-wrapper">
@@ -50,7 +74,10 @@
     <tbody>
         {% for item in jobs_view %}
         <tr>
-            <td>{{ item.job.name }}</td>
+            <td>
+                {{ item.job.name }}
+                {% if not item.job.enabled %}<div class="muted small">(disabled)</div>{% endif %}
+            </td>
             <td>
                 {% if item.source_connected %}
                     <span class="state-text state-ok">Connected</span>
@@ -61,20 +88,11 @@
             <td class="path-cell">{{ item.job.source_path }}</td>
             <td class="path-cell">{{ item.job.dest_path }}</td>
             <td>
-                <form method="POST" action="{{ url_for('main.job_schedule', job_id=item.job.id) }}" class="inline-form">
-                    <input type="text" name="cron_expression" value="{{ item.job.cron_expression }}"
-                           placeholder="e.g. 0 3 * * *  or  manual" size="14">
-                    <button type="submit">OK</button>
-                </form>
+                <div>{{ item.job.cron_expression }}</div>
                 <div class="muted small">{{ item.cron_readable }}</div>
             </td>
             <td>
-                <form method="POST" action="{{ url_for('main.job_retention', job_id=item.job.id) }}" class="inline-form">
-                    <input type="number" name="retention_count" min="1"
-                           value="{{ item.job.retention_count if item.job.retention_count else '' }}"
-                           placeholder="unlimited" size="4">
-                    <button type="submit">OK</button>
-                </form>
+                {{ item.job.retention_count if item.job.retention_count else "unlimited" }}
             </td>
             <td>
                 {% if item.last_run %}
@@ -119,23 +137,20 @@
                 <form method="POST" action="{{ url_for('main.job_run', job_id=item.job.id) }}">
                     <button type="submit">Run</button>
                 </form>
-                <form method="POST" action="{{ url_for('main.job_toggle', job_id=item.job.id) }}">
-                    <button type="submit">{{ "Disable" if item.job.enabled else "Enable" }}</button>
-                </form>
                 <a href="{{ url_for('main.job_archives', job_id=item.job.id) }}"><button type="button">History</button></a>
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="12" class="muted">No jobs found in .env (BACK1_NAME, BACK1_SOURCE, BACK1_DEST, ...).</td></tr>
+        <tr><td colspan="12" class="muted">No jobs to show.</td></tr>
         {% endfor %}
     </tbody>
 </table>
 </div>
 
 <p class="muted small">
-    Cron: standard 5-field format (minute hour day month weekday), e.g. <code>0 3 * * *</code> = every day at 3:00.
-    Use <code>manual</code> to turn off automatic scheduling ("Run" button only).
-    Keep: number of archives to keep per job, empty = unlimited.
+    Cron: standard 5-field format (minute hour day month weekday), e.g. <code>0 3 * * *</code> = every day at 3:00;
+    <code>manual</code> = no automatic schedule ("Run" button only).
+    Keep: number of archives kept per job, empty = unlimited.
     Estimated: projected total size once the retention count is reached (based on the current average size).
 </p>
 

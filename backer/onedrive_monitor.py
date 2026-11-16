@@ -2,13 +2,17 @@
 Surveillance du log du client OneDrive (abraunegg/onedrive).
 
 Lit les nouvelles lignes du fichier de log (montage en lecture seule) et
-retient, pour chaque archive .zip, l'heure de la ligne
-« Uploading new file: <chemin> ... done ». La confirmation est gardée en
-base (table onedrive_uploads) : elle survit à la coupure ou à la rotation
-du log. Retient aussi l'heure du dernier « Sync with Microsoft OneDrive is complete ».
+retient :
+- pour chaque archive .zip, l'heure de la ligne
+  « Uploading new file: <chemin> ... done » (gardée en base, table
+  onedrive_uploads : elle survit à la coupure ou à la rotation du log) ;
+- en mémoire, les derniers événements utiles : fin de synchronisation,
+  contact avec le service Microsoft, éléments traités, dernière suppression
+  côté OneDrive, écart d'horloge, espace libre restant (affiché par le
+  client à son démarrage en mode verbeux).
 
-Fonctions réutilisables par l'API Homepage et, plus tard, par le dashboard :
-scan_log() et upload_info().
+Fonctions réutilisables par l'API et, plus tard, par le dashboard :
+scan_log(), upload_info(), upload_times(), monitor_state().
 """
 import os
 import re
@@ -24,6 +28,11 @@ LOG_FILE = os.environ.get("ONEDRIVE_LOG_FILE", "/onedrive-log/onedrive.onedrive.
 _LINE_RE = re.compile(r"^\[(\d{4})-([A-Za-z]{3})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.\d+\] (.*)$")
 _UPLOAD_DONE_RE = re.compile(r"^Uploading new file: (.+) \.\.\. done$")
 _SYNC_COMPLETE = "Sync with Microsoft OneDrive is complete"
+_REACH = "Successfully reached the Microsoft OneDrive Service"
+_ITEMS_RE = re.compile(r"^Processed (\d+) applicable JSON items received from Microsoft OneDrive")
+_DELETED_RE = re.compile(r"^Successfully deleted item from Microsoft OneDrive: (.+)$")
+_SKEW_RE = re.compile(r"^Observed clock difference\s*=\s*([+-]?[\d.]+) seconds")
+_FREE_RE = re.compile(r"^Remaining Free Space:\s+[\d.]+\s*[A-Za-z]+\s+\((\d+) bytes\)")
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -31,7 +40,14 @@ _MONTHS = {
 }
 
 _lock = threading.Lock()
-_state = {"offset": 0, "inode": None, "last_sync": None, "readable": False}
+_state = {
+    "offset": 0, "inode": None, "readable": False,
+    "last_sync": None, "last_reach": None,
+    "last_items": None,         # {"count": int, "at": datetime}
+    "last_deletion": None,      # {"path": str, "at": datetime}
+    "clock_skew_seconds": None,
+    "free_space": None,         # {"bytes": int, "at": datetime}
+}
 
 
 def _parse_ts(m):
@@ -68,7 +84,7 @@ def scan_log():
             return True
 
         uploads = []
-        last_sync = None
+        updates = {}
         for raw in data[:end].decode("utf-8", errors="replace").splitlines():
             m = _LINE_RE.match(raw)
             if not m:
@@ -77,14 +93,42 @@ def scan_log():
             if ts is None:
                 continue
             msg = m.group(7)
+
             if msg == _SYNC_COMPLETE:
-                last_sync = ts
+                updates["last_sync"] = ts
                 continue
+            if msg == _REACH:
+                updates["last_reach"] = ts
+                continue
+
             u = _UPLOAD_DONE_RE.match(msg)
             if u:
                 name = os.path.basename(u.group(1))
                 if name.endswith(".zip"):
                     uploads.append((name, ts))
+                continue
+
+            i = _ITEMS_RE.match(msg)
+            if i:
+                updates["last_items"] = {"count": int(i.group(1)), "at": ts}
+                continue
+
+            d = _DELETED_RE.match(msg)
+            if d:
+                updates["last_deletion"] = {"path": d.group(1), "at": ts}
+                continue
+
+            s = _SKEW_RE.match(msg)
+            if s:
+                try:
+                    updates["clock_skew_seconds"] = float(s.group(1))
+                except ValueError:
+                    pass
+                continue
+
+            fr = _FREE_RE.match(msg)
+            if fr:
+                updates["free_space"] = {"bytes": int(fr.group(1)), "at": ts}
 
         try:
             for name, ts in uploads:
@@ -102,8 +146,7 @@ def scan_log():
             return True
 
         _state["offset"] += end + 1
-        if last_sync is not None:
-            _state["last_sync"] = last_sync
+        _state.update(updates)
         return True
 
 
@@ -131,5 +174,9 @@ def upload_times(archive_names):
 
 
 def monitor_state():
-    """État du moniteur : log lisible ? date de la dernière synchro terminée."""
-    return {"readable": _state["readable"], "last_sync": _state["last_sync"]}
+    """Copie de l'état du moniteur (log lisible, derniers événements)."""
+    with _lock:
+        return {k: _state[k] for k in (
+            "readable", "last_sync", "last_reach", "last_items",
+            "last_deletion", "clock_skew_seconds", "free_space",
+        )}

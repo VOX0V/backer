@@ -16,13 +16,13 @@ services:
       - ./data:/app/data
 
       # Sources à sauvegarder, montées en LECTURE SEULE : adapte les chemins
-      # hôtes à ta machine. Doivent correspondre aux BACKN_SOURCE du .env.
+      # hôtes à ta machine. Doivent correspondre aux `source` de jobs.yml.
       - /home/srv:/mnt/sources/srv:ro
       - /mnt/netsec:/mnt/sources/netsec:ro
       - /mnt/piserv:/mnt/sources/piserv:ro
 
       # Destination des archives, seule racine montée en écriture. Doit
-      # correspondre aux BACKN_DEST du .env.
+      # correspondre aux `dest` de jobs.yml.
       - /mnt/hdd:/mnt/sources/hdd
 
     mem_limit: 512m
