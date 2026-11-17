@@ -15,6 +15,7 @@ import monitoring
 import notifier
 from extensions import db
 from models import AlertState, BackupJob
+from onedrive_monitor import scan_log, log_status
 from utils import format_size
 
 
@@ -76,12 +77,48 @@ def _check_disk(job, snap):
         db.session.commit()
 
 
+def _check_log():
+    """Alerte quand le log OneDrive devient illisible ou figé (une seule fois par incident)."""
+    state, age = log_status()
+    bad = state != "ok"
+    key = "onedrive_log"
+    row = AlertState.query.filter_by(key=key).first()
+
+    if bad and (row is None or not row.active):
+        if state == "unreadable":
+            detail = "Backer cannot read the OneDrive log file."
+        else:
+            detail = f"The OneDrive log has not been updated for {age // 60} minutes."
+        ok, error = notifier.send_email(
+            "[Backer] OneDrive log unavailable",
+            f"{detail}\n\nUpload confirmations are suspended until the log is available again. "
+            "Check that the OneDrive client is running and that the log folder mounted in Backer "
+            "still exists (recreate the Backer container if the folder was deleted and recreated).\n",
+        )
+        if not ok:
+            print(f"[Backer] e-mail alert not sent ({key}): {error}")
+            return
+        try:
+            if row is None:
+                db.session.add(AlertState(key=key, active=True, created_at=datetime.now()))
+            else:
+                row.active = True
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    elif not bad and row is not None and row.active:
+        row.active = False
+        db.session.commit()
+
+
 def check_alerts():
     """À appeler dans un contexte d'application."""
     if not notifier.is_configured() or jobs_config.status["state"] == "missing":
         return
     baseline = _baseline()
     now = datetime.now()
+    scan_log()
+    _check_log()
 
     for job in BackupJob.query.filter_by(enabled=True).all():
         snap = monitoring.snapshot(job, now)

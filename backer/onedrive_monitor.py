@@ -17,6 +17,7 @@ scan_log(), upload_info(), upload_times(), monitor_state().
 import os
 import re
 import threading
+import time
 from datetime import datetime
 
 from extensions import db
@@ -43,7 +44,7 @@ _MONTHS = {
 
 _lock = threading.Lock()
 _state = {
-    "offset": 0, "inode": None, "readable": False,
+    "offset": 0, "inode": None, "readable": False, "mtime": None, "checked_at": None,
     "last_sync": None, "last_reach": None,
     "last_items": None,         # {"count": int, "at": datetime}
     "last_deletion": None,      # {"path": str, "at": datetime}
@@ -67,6 +68,7 @@ def scan_log():
     with _lock:
         try:
             st = os.stat(LOG_FILE)
+            _state["mtime"] = st.st_mtime
             # Fichier remplacé ou coupé : on relit depuis le début.
             if st.st_ino != _state["inode"] or st.st_size < _state["offset"]:
                 _state["offset"] = 0
@@ -76,9 +78,12 @@ def scan_log():
                 data = f.read()
         except OSError:
             _state["readable"] = False
+            _state["mtime"] = None
+            _state["checked_at"] = time.time()
             return False
 
         _state["readable"] = True
+        _state["checked_at"] = time.time()
 
         # Seules les lignes complètes sont traitées (la dernière peut être en cours d'écriture).
         end = data.rfind(b"\n")
@@ -203,10 +208,32 @@ def upload_times(archive_names):
     return {r.archive_name: r.uploaded_at for r in rows}
 
 
+# Le client écrit une ligne toutes les 5 minutes : au-delà de ce délai sans
+# écriture, le log est considéré comme figé (client arrêté ou dossier remplacé).
+LOG_STALE_SECONDS = 15 * 60
+
+
+def log_status():
+    """Connexion au log : retourne (état, âge en secondes).
+    état : "ok" (lisible et récent), "stale" (lisible mais plus mis à jour),
+    "unreadable" (fichier introuvable ou illisible, par exemple dossier remplacé)."""
+    with _lock:
+        never_checked = _state["checked_at"] is None
+    if never_checked:
+        scan_log()
+    with _lock:
+        if not _state["readable"]:
+            return "unreadable", None
+        age = int(time.time() - _state["mtime"]) if _state["mtime"] else None
+    if age is not None and age > LOG_STALE_SECONDS:
+        return "stale", age
+    return "ok", age
+
+
 def monitor_state():
     """Copie de l'état du moniteur (log lisible, derniers événements)."""
     with _lock:
         return {k: _state[k] for k in (
-            "readable", "last_sync", "last_reach", "last_items",
+            "readable", "mtime", "checked_at", "last_sync", "last_reach", "last_items",
             "last_deletion", "clock_skew_seconds", "free_space",
         )}

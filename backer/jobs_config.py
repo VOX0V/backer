@@ -29,7 +29,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 JOBS_FILE = os.environ.get("JOBS_FILE", os.path.join(DATA_DIR, "jobs.yml"))
 
 # Noms de clés déjà utilisés au premier niveau de /api/status.
-RESERVED_NAMES = {"backer", "onedrive_client", "offsite_storage"}
+RESERVED_NAMES = {"backer", "onedrive_client", "offsite_storage", "connections"}
 _ALLOWED_KEYS = {"name", "source", "dest", "cron", "retention", "enabled"}
 
 EXAMPLE_YAML = """\

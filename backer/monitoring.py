@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import settings_store
 from extensions import scheduler
 from models import BackupHistory
-from onedrive_monitor import upload_info, upload_times, upload_failure_info
+from onedrive_monitor import upload_info, upload_times, upload_failure_info, log_status
 from scheduler_jobs import is_job_running, _apscheduler_job_id
 from utils import host_to_container_path, check_mount_status, list_job_archives, PathError
 
@@ -56,6 +56,41 @@ def average_upload_delay(job_id, limit=10):
             if delay >= 0:
                 delays.append(delay)
     return round(sum(delays) / len(delays)) if delays else None
+
+
+def _mb_per_s(size_bytes, seconds):
+    """Vitesse en Mo/s (1 Mo = 1 000 000 octets), ou None."""
+    if not size_bytes or not seconds or seconds <= 0:
+        return None
+    return round(size_bytes / seconds / 1_000_000, 2)
+
+
+def average_speeds(job_id, limit=10):
+    """Vitesses moyennes (Mo/s) sur les dernières sauvegardes réussies :
+    (création de l'archive, upload). Taille de l'archive / durée de la sauvegarde,
+    et taille / délai jusqu'à la confirmation de l'upload (ce délai inclut le
+    temps que le client met à détecter le fichier)."""
+    rows = (
+        BackupHistory.query.filter_by(job_id=job_id, status="success")
+        .filter(BackupHistory.finished_at.isnot(None), BackupHistory.archive_name.isnot(None))
+        .order_by(BackupHistory.finished_at.desc()).limit(limit).all()
+    )
+    times = upload_times([r.archive_name for r in rows])
+    backup_size = backup_time = upload_size = upload_time = 0
+    for r in rows:
+        if not r.size_bytes or not r.started_at:
+            continue
+        duration = (r.finished_at - r.started_at).total_seconds()
+        if duration > 0:
+            backup_size += r.size_bytes
+            backup_time += duration
+        uploaded = times.get(r.archive_name)
+        if uploaded:
+            delay = (uploaded - r.finished_at).total_seconds()
+            if delay > 0:
+                upload_size += r.size_bytes
+                upload_time += delay
+    return _mb_per_s(backup_size, backup_time), _mb_per_s(upload_size, upload_time)
 
 
 def upload_limit_seconds(upload_avg):
@@ -124,6 +159,7 @@ def snapshot(job, now=None):
     # --- upload de la dernière archive
     upload_avg = average_upload_delay(job.id)
     upload_limit = upload_limit_seconds(upload_avg)
+    log_state, log_age = log_status()
     uploaded_at = failed_at = None
     upload_elapsed = upload_remaining = None
     upload_overdue = False
@@ -141,6 +177,8 @@ def snapshot(job, now=None):
             failed_at = upload_failure_info(last_ok.archive_name)
             if failed_at:
                 upload_state = "failed"
+            elif log_state != "ok":
+                upload_state = "unknown"  # log illisible ou figé : impossible de savoir
             else:
                 upload_elapsed = max(0, int((now - last_ok.finished_at).total_seconds())) if last_ok.finished_at else 0
                 if upload_elapsed <= upload_limit:
@@ -151,8 +189,17 @@ def snapshot(job, now=None):
                 else:
                     upload_state = "unconfirmed"
 
+    backup_speed = None
+    if last_ok and last_ok.finished_at and last_ok.started_at:
+        backup_speed = _mb_per_s(last_ok.size_bytes, (last_ok.finished_at - last_ok.started_at).total_seconds())
+    upload_speed = _mb_per_s(last_ok.size_bytes, last_delay) if last_ok and last_delay else None
+    backup_speed_avg, upload_speed_avg = average_speeds(job.id)
+
     return {
         "now": now,
+        "log_state": log_state, "log_age": log_age,
+        "backup_speed": backup_speed, "upload_speed": upload_speed,
+        "backup_speed_avg": backup_speed_avg, "upload_speed_avg": upload_speed_avg,
         "last_run": last_run, "last_ok": last_ok, "prev_ok": prev_ok, "last_fail": last_fail,
         "recent_failures": recent_failures,
         "next_run": ap_job.next_run_time if ap_job else None,
@@ -208,6 +255,10 @@ def health(job, snap):
         warning.append("upload not confirmed")
     if snap["size_drop"]:
         warning.append("archive much smaller than the previous one")
+    if snap["log_state"] == "unreadable":
+        warning.append("OneDrive log unreadable (upload status unknown)")
+    elif snap["log_state"] == "stale":
+        warning.append("OneDrive log not updated recently (upload status unknown)")
 
     if critical:
         return "critical", critical + warning

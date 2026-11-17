@@ -35,6 +35,17 @@
 </div>
 {% endif %}
 
+{% if log_state != "ok" %}
+<div class="flash flash-error">
+    {% if log_state == "unreadable" %}
+        The OneDrive log cannot be read.
+    {% else %}
+        The OneDrive log has not been updated for {{ (log_age // 60) if log_age else "?" }} min: the OneDrive client may be stopped.
+    {% endif %}
+    Upload status is unknown until the log is available again.
+</div>
+{% endif %}
+
 {% if last_failed_login %}
 <div class="flash flash-error security-note">
     <span>
@@ -108,7 +119,7 @@
                         <div class="muted small">{{ item.last_run.size_bytes|filesizeformat }}</div>
                     {% endif %}
                     {% if item.avg_text %}
-                        <div class="muted small">average duration {{ item.avg_text }}</div>
+                        <div class="muted small">average duration {{ item.avg_text }}{% if item.snap.backup_speed_avg %} · {{ item.snap.backup_speed_avg }} MB/s{% endif %}</div>
                     {% endif %}
                     {% if item.last_run.status == "running" %}
                         <div class="progress" data-kind="backup" data-elapsed="{{ item.snap.backup_elapsed or 0 }}" data-avg="{{ item.snap.backup_avg or 0 }}">
@@ -141,6 +152,9 @@
                         <div class="progress-track"><div class="progress-bar"></div></div>
                         <div class="progress-text muted small"></div>
                     </div>
+                {% elif s.upload_state == "unknown" %}
+                    <span class="badge badge-running">Upload status unknown</span>
+                    <div class="muted small">OneDrive log unavailable</div>
                 {% elif s.upload_state == "unconfirmed" %}
                     <span class="badge badge-failed">No upload confirmation</span>
                     <div class="muted small">backup finished on {{ s.last_ok.finished_at.strftime('%Y-%m-%d at %H:%M:%S') }}</div>
@@ -148,7 +162,7 @@
                     <span class="muted">—</span>
                 {% endif %}
                 {% if item.avg_upload_text %}
-                    <div class="muted small">average upload {{ item.avg_upload_text }}</div>
+                    <div class="muted small">average upload {{ item.avg_upload_text }}{% if item.snap.upload_speed_avg %} · {{ item.snap.upload_speed_avg }} MB/s{% endif %}</div>
                 {% endif %}
             </td>
             <td>{{ item.archive_count }}</td>

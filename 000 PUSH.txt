@@ -10,7 +10,6 @@ Docker recreate :
 cd /home/srv/sys
 docker compose pull backer
 docker compose up -d --force-recreate backer
-docker compose logs --tail=50 backer
 
 cd /home/srv/gitapps/test
 sudo chown -R voxov:voxov logger

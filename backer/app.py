@@ -26,10 +26,10 @@ from jobs_config import (
     apply_jobs, init_jobs,
 )
 from onedrive_monitor import (
-    scan_log, scan_log_job, upload_info, upload_times, monitor_state,
+    scan_log, scan_log_job, upload_info, upload_times, monitor_state, log_status,
 )
 
-APP_VERSION = "v4.6"
+APP_VERSION = "v4.7"
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "secret_key")
@@ -137,7 +137,7 @@ def _visible_jobs():
 
 _ONEDRIVE_LABELS = {
     "none": "no backup", "uploaded": "uploaded", "pending": "pending",
-    "unconfirmed": "unconfirmed", "failed": "failed",
+    "unconfirmed": "unconfirmed", "failed": "failed", "unknown": "unknown",
 }
 _HEALTH_RANK = {"ok": 0, "disabled": 0, "warning": 1, "critical": 2}
 
@@ -200,17 +200,24 @@ def api_status():
             "onedrive_failed_at": _iso_local(snap["failed_at"]),
             "onedrive_delay_seconds": snap["last_delay"],
             "average_upload_seconds": snap["upload_avg"],
+            "backup_speed_mb_s": snap["backup_speed"],
+            "average_backup_speed_mb_s": snap["backup_speed_avg"],
+            "upload_speed_mb_s": snap["upload_speed"],
+            "average_upload_speed_mb_s": snap["upload_speed_avg"],
+            "source_connected": snap["source_status"] == "ok",
             "upload_elapsed_seconds": snap["upload_elapsed"],
             "upload_remaining_seconds": snap["upload_remaining"],
             "upload_overdue": snap["upload_overdue"],
         }
 
+    log_state, log_age = log_status()
     state = monitor_state()
     items = state["last_items"]
     deletion = state["last_deletion"]
     free = state["free_space"]
     data["onedrive_client"] = {
-        "log": "ok" if state["readable"] else "unreadable",
+        "log": log_state,  # ok / stale (plus mis à jour) / unreadable
+        "log_age_seconds": log_age,
         "last_sync": _iso_local(state["last_sync"]),
         "last_service_contact": _iso_local(state["last_reach"]),
         "last_items_processed": items["count"] if items else None,
@@ -221,6 +228,16 @@ def api_status():
         # Espace restant affiché par le client à son démarrage (mode verbeux seulement).
         "remaining_free_bytes": free["bytes"] if free else None,
         "remaining_free_at": _iso_local(free["at"]) if free else None,
+    }
+    sources = {
+        name: entry["source_status"]
+        for name, entry in data.items() if isinstance(entry, dict) and "source_status" in entry
+    }
+    data["connections"] = {
+        "onedrive_log": log_state,
+        "onedrive_service_contact_age_seconds": _seconds_between(now, state["last_reach"]),
+        "sources": sources,
+        "all_sources_ok": all(v == "ok" for v in sources.values()),
     }
     offsite = _offsite_summary(grand_total)
     data["offsite_storage"] = {
@@ -244,6 +261,7 @@ def api_status():
 @login_required
 def dashboard():
     now = datetime.now()
+    log_state, log_age = log_status()
     jobs = _visible_jobs()
     jobs_view = []
     grand_total = 0
@@ -287,6 +305,7 @@ def dashboard():
         jobs_status=jobs_config.status, jobs_file=JOBS_FILE,
         pie=_build_pie([(i["job"].name, i["total_size"]) for i in jobs_view]),
         offsite=_offsite_summary(grand_total),
+        log_state=log_state, log_age=log_age,
     )
 
 

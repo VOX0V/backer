@@ -110,6 +110,21 @@ faut un mot de passe d'application. Le bouton « Send test email » de la page
 Jobs vérifie la configuration. Au premier passage, seuls les événements
 postérieurs à l'activation des alertes déclenchent un e-mail.
 
+## Vitesses et connexion au log
+
+Backer estime la vitesse de création des archives (taille de l'archive /
+durée de la sauvegarde) et la vitesse d'upload (taille / délai jusqu'à la
+confirmation OneDrive, qui inclut le temps de détection du fichier par le
+client), en Mo/s (1 Mo = 1 000 000 octets), sur les 10 dernières sauvegardes.
+
+La connexion au log du client OneDrive est vérifiée : `ok`, `stale` (pas
+écrit depuis plus de 15 minutes : client arrêté ou dossier remplacé) ou
+`unreadable` (fichier introuvable). Dans ces deux derniers cas, l'état des
+uploads passe à `unknown` (plus de fausses alertes), la santé passe en
+`warning`, un bandeau s'affiche et un e-mail est envoyé. Si le dossier du log
+a été supprimé puis recréé, il faut recréer le conteneur Backer pour le
+raccrocher.
+
 ## Courbes (Trends)
 
 La page Trends montre, pour chaque tâche, la taille des archives et la durée
